@@ -1,0 +1,27 @@
+# Unit enablement for the sandbox.
+#
+# A preset file rather than `systemctl enable` in a postinst script: mkosi runs
+# `systemctl preset-all` after the postinst scripts, which removes any wants
+# symlink not backed by a preset. Enabling units imperatively there is silently
+# undone. Numbered 00 so it is read before the distribution's own presets.
+
+enable sshd.service
+enable chronyd.service
+enable systemd-networkd.service
+enable agent-identity.service
+enable dotfiles-link.service
+enable pacman-init.service
+enable docker.service
+
+
+# The display stack. Both carry ConditionPathExists, so in a light image —
+# which has no TigerVNC and no window manager — they are skipped rather than
+# failed, and enabling them here costs nothing.
+enable xvnc.service
+enable wm.service
+enable fstrim.timer
+
+# Nothing should manage /etc/resolv.conf: it is a static file naming L1, the
+# only resolver a sandbox can reach. Disabled rather than masked, because a
+# mask symlink makes preset-all fail.
+disable systemd-resolved.service

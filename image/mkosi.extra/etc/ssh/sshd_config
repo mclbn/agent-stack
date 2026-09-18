@@ -1,0 +1,15 @@
+# Complete file rather than a drop-in: whether Arch's stock sshd_config carries
+# an Include line is a packaging detail, and if it ever stopped doing so sshd
+# would silently fall back to ~/.ssh/authorized_keys — which a compromised
+# sandbox can append to, granting itself persistent access.
+AuthorizedKeysFile /etc/agent-config/authorized_keys
+
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+UsePAM yes
+
+X11Forwarding no
+PrintMotd no
+AcceptEnv LANG LC_*
+Subsystem sftp /usr/lib/ssh/sftp-server

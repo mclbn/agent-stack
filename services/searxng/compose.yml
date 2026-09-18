@@ -1,0 +1,65 @@
+# SearXNG, its cache, and the MCP server that fronts it.
+#
+# This file is the whole definition of the service. L1 runs it from a systemd
+# unit at boot; to add another service, copy this directory, change this file,
+# and add a line to site.nix. Nothing else in the stack changes.
+#
+# Two conventions the stack relies on, both substituted by the unit:
+#   $SVC_BIND   L1's address on the agents segment — publish there, never on
+#               0.0.0.0, or the service would face whatever network the laptop
+#               is on.
+#   $SVC_DATA   a persistent directory on /data, for stacks that want one.
+
+services:
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    restart: unless-stopped
+    volumes:
+      # One file, not the directory: the image ships other things in
+      # /etc/searxng, and replacing the whole directory would hide them.
+      # Relative to this file, and read-only — the settings come from the stack
+      # repository, not from anything the container can rewrite.
+      - ./settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      - SEARXNG_BASE_URL=http://searxng:8080/
+      - UWSGI_WORKERS=2
+      - UWSGI_THREADS=2
+    depends_on:
+      - valkey
+    networks: [svc]
+
+  valkey:
+    image: docker.io/valkey/valkey:8-alpine
+    restart: unless-stopped
+    command: valkey-server --save "" --appendonly no
+    # Cache only, deliberately not persisted: losing it costs one slow search.
+    tmpfs:
+      - /data
+    networks: [svc]
+
+  mcp-searxng:
+    image: docker.io/isokoliuk/mcp-searxng:latest
+    restart: unless-stopped
+    ports:
+      # Only this port is reachable from a sandbox, and only from a sandbox.
+      - "${SVC_BIND}:3000:3000"
+    environment:
+      # Which SearXNG to query — the compose service name, not the MCP
+      # endpoint. The two are different and the upstream README says so twice.
+      - SEARXNG_URL=http://searxng:8080
+      # Streamable HTTP rather than STDIO, so agents receive a URL: nothing is
+      # spawned in the sandbox and nothing is installed in the image.
+      - MCP_HTTP_PORT=3000
+      # Defaults to 127.0.0.1, which would accept nothing from outside the
+      # container. The published port above is what limits who can reach it.
+      - MCP_HTTP_HOST=0.0.0.0
+    depends_on:
+      - searxng
+    networks: [svc]
+
+networks:
+  svc:
+    driver_opts:
+      # A predictable bridge name, so one firewall rule covers every service
+      # stack instead of one per generated br-<hash>.
+      com.docker.network.bridge.name: svcbr-searxng

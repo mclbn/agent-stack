@@ -1,0 +1,52 @@
+#!/bin/bash
+# Read the per-project identity from the read-only config mount and configure
+# the network from it. Address, hostname and profile only: routing is derived
+# from the address, not carried alongside it.
+set -euo pipefail
+
+identity=/etc/agent-config/identity
+gateway=10.42.0.1
+
+if [ ! -r "$identity" ]; then
+    echo "no $identity: leaving the network unconfigured" >&2
+    exit 0
+fi
+
+ADDRESS=; HOSTNAME=; PROFILE=
+# shellcheck disable=SC1090
+. "$identity"
+
+if [ -n "$HOSTNAME" ]; then
+    # /etc/hostname is read by systemd long before this unit runs, so writing
+    # it alone changes nothing until the next boot. hostnamectl would apply it
+    # now, but systemd-hostnamed is not up this early and the failure was
+    # silent. The sysctl takes effect immediately and needs no daemon; the
+    # file keeps it correct for anything that reads it later.
+    echo "$HOSTNAME" > /etc/hostname
+    echo "$HOSTNAME" > /proc/sys/kernel/hostname
+fi
+
+if [ -z "$ADDRESS" ]; then
+    echo "no ADDRESS in $identity" >&2
+    exit 1
+fi
+
+# /32 with an on-link default route: the gateway is deliberately outside the
+# guest's prefix, so traffic aimed at another sandbox leaves as a routed packet
+# and is dropped and logged on L1 rather than failing as an unanswered ARP.
+mkdir -p /run/systemd/network
+cat > /run/systemd/network/10-agent.network <<NET
+[Match]
+Name=en*
+
+[Network]
+Address=${ADDRESS}/32
+IPv6AcceptRA=no
+LinkLocalAddressing=no
+
+[Route]
+Gateway=${gateway}
+GatewayOnLink=yes
+NET
+
+echo "identity: ${HOSTNAME:-unnamed} at ${ADDRESS}, profile ${PROFILE:-default}"

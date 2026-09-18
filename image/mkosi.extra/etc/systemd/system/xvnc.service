@@ -1,0 +1,25 @@
+[Unit]
+Description=Xvnc on :0 for this sandbox
+# Present in the full profile only. In a light image TigerVNC is not
+# installed, the condition fails, and systemd skips the unit without marking
+# it failed — which is why this is a condition rather than a separate profile
+# tree to keep in step.
+ConditionPathExists=/usr/bin/Xvnc
+After=network.target
+Before=multi-user.target
+
+[Service]
+Type=simple
+User=agent
+Group=agent
+# -localhost: reachable only through the ssh tunnel from L0.
+# -SecurityTypes None: no VNC password, because the tunnel is already
+# authenticated by key and a second secret would have to live somewhere.
+# The display is stable for the VM's lifetime, which is what lets the Emacs
+# daemon keep a valid DISPLAY and its frames survive disconnection.
+ExecStart=/usr/bin/Xvnc :0 -localhost -SecurityTypes None -geometry GEOMETRY -depth DEPTH -AlwaysShared
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

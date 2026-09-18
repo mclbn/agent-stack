@@ -1,0 +1,83 @@
+#!/bin/bash
+# Runs after the packages are installed and the extra trees copied in, with
+# $BUILDROOT pointing at the image root. Host tools operate on it directly;
+# nothing executes inside the image, because that needs mkosi-chroot and the
+# nixpkgs mkosi wrapper cannot run it.
+#
+# The keyring and the package database are *not* done here: pacman run from
+# the host against $BUILDROOT resolves the Include paths in pacman.conf
+# against mkosi's sandbox rather than the image, and fails on a mirrorlist it
+# cannot see. pacman-init.service does both on first boot instead.
+set -euo pipefail
+
+# --- locale for non-login sessions ---------------------------------------------
+# systemd-firstboot writes /etc/locale.conf, which covers services and login
+# shells. It does not cover `ssh host cmd`, which is neither a login nor an
+# interactive shell: LANG arrives empty, LC_CTYPE falls back to POSIX, and tmux
+# decides at server start that the terminal is not UTF-8 — after which it draws
+# an underscore for every character it will not render.
+#
+# /etc/environment is read by pam_env, which sshd goes through for every
+# session type. Copied from locale.conf so site.nix stays the single source.
+if [ -r "$BUILDROOT/etc/locale.conf" ]; then
+    grep '^LANG=' "$BUILDROOT/etc/locale.conf" >> "$BUILDROOT/etc/environment"
+    echo "    /etc/environment: $(grep '^LANG=' "$BUILDROOT/etc/environment")"
+fi
+
+# --- display geometry ---------------------------------------------------------
+# The Xvnc unit is a static file and cannot read site.nix, so golden-build
+# passes the values through mkosi's environment and they are substituted here.
+# Harmless in a light image: the unit exists but its ConditionPathExists never
+# holds, so it is skipped.
+unit="$BUILDROOT/etc/systemd/system/xvnc.service"
+if [ -f "$unit" ]; then
+    sed -i -e "s/GEOMETRY/${VNC_GEOMETRY:-1920x1080}/" \
+           -e "s/DEPTH/${VNC_DEPTH:-24}/" "$unit"
+    echo "    Xvnc: ${VNC_GEOMETRY:-1920x1080} at ${VNC_DEPTH:-24} bit"
+fi
+
+# --- agents ------------------------------------------------------------------
+# A staged home built on L0 by golden-build, running each vendor's own
+# installer with HOME pointed at it. Copied in whole, so the agents sit where
+# their own auto-update expects them: a launcher in ~/.local/bin symlinked
+# into a versions directory. Updates then land on the overlay, the image sets
+# a floor, and a reset returns to the baked version.
+if [ -d agent-home ]; then
+    install -d -m 0700 "$BUILDROOT/home/agent"
+    cp -a agent-home/. "$BUILDROOT/home/agent/"
+
+    # The installers write *absolute* symlinks, pointing at wherever HOME was
+    # when they ran — the staging directory on L0, which does not exist in the
+    # image. Left alone they dangle and every agent fails with "No such file
+    # or directory". Rewrite them to the path they will actually live at.
+    while IFS= read -r -d "" link; do
+        target=$(readlink "$link")
+        case "$target" in
+            */agent-home/*) ln -sfn "/home/agent/${target#*/agent-home/}" "$link" ;;
+        esac
+    done < <(find "$BUILDROOT/home/agent" -type l -print0)
+
+    chown -R 1000:1000 "$BUILDROOT/home/agent"
+
+    # Reachable from any shell, login or not, interactive or not: a PATH entry
+    # in /etc/profile.d only helps shells that read it, and `ssh host cmd`
+    # does not. The agents also do not agree on a directory — claude and codex
+    # land in ~/.local/bin, opencode in ~/.opencode/bin.
+    #
+    # Symlinks rather than copies, so self-update still works: the target is
+    # the launcher in the agent's home, which the updater rewrites.
+    #
+    # -L as well as -e: after the rewrite above these point at /home/agent,
+    # which resolves in the image but not here, so testing only -e would skip
+    # every one of them. That is exactly the bug this replaces.
+    install -d -m 0755 "$BUILDROOT/usr/local/bin"
+    for dir in .local/bin .opencode/bin .codex/bin; do
+        [ -d "$BUILDROOT/home/agent/$dir" ] || continue
+        for path in "$BUILDROOT/home/agent/$dir"/*; do
+            [ -e "$path" ] || [ -L "$path" ] || continue
+            name=$(basename "$path")
+            ln -sfn "/home/agent/$dir/$name" "$BUILDROOT/usr/local/bin/$name"
+            echo "    /usr/local/bin/$name -> /home/agent/$dir/$name"
+        done
+    done
+fi

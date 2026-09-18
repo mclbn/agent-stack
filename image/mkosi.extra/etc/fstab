@@ -1,0 +1,6 @@
+# virtiofs tags supplied by agentctl on L1. nofail throughout: a sandbox that
+# boots without its workspace is diagnosable over the serial console, one that
+# refuses to boot is not.
+work            /work               virtiofs  nofail                0 0
+config          /etc/agent-config   virtiofs  ro,nofail             0 0
+dotfiles        /etc/dotfiles       virtiofs  ro,nofail             0 0

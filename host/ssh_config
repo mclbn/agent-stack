@@ -1,0 +1,35 @@
+# Append to ~/.ssh/config on L0, adjusting IdentityFile.
+#
+# All connections are initiated from L0 inwards; nothing downstream may
+# initiate outwards. No forced command and no restrict on the key: both would
+# break ProxyJump, the credential push and vncviewer -via.
+
+Host l1
+    HostName 10.99.0.2
+    User root
+    IdentityFile ~/.ssh/agent-stack
+    IdentitiesOnly yes
+
+# Sandboxes, by internal name only. The zone must match site.nix's
+# internalDomain; this file is plain text and cannot read it. Deliberately not by address: a pattern
+# like 10.42.* would match any host on any network you ever reach, and L1's
+# internal addressing does not belong in your personal ssh config.
+#
+# Nothing on L0 needs to resolve these names. With ProxyJump the destination
+# is resolved by the jump host, and L1's unbound is authoritative for the zone.
+#
+# Host key checking is off here, and only here. A sandbox regenerates its host
+# keys on every `agentctl reset`, which is the point of a reset, so strict
+# checking would mean clearing a stale entry after each one — and a habit of
+# dismissing host key warnings costs more than this check is worth. The check
+# that matters is on l1 above: reaching a sandbox means authenticating to L1
+# first, and anything able to forge a sandbox key from inside L1's tap already
+# owns L1. Sending these to /dev/null keeps the real known_hosts meaningful.
+Host *.agents.contained
+    ProxyJump l1
+    User agent
+    IdentityFile ~/.ssh/agent-stack
+    IdentitiesOnly yes
+    UserKnownHostsFile /dev/null
+    StrictHostKeyChecking no
+    LogLevel ERROR

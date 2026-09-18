@@ -1,0 +1,35 @@
+#!/bin/bash
+# Symlink dotfiles from the read-only mount into the agent's home.
+#
+# Individual *files*, not whole directories: a symlinked ~/.config would make
+# the whole tree read-only, and everything that writes there — package
+# managers, language servers, the agents themselves — would fail. Linking file
+# by file leaves the directories writable on the overlay.
+set -euo pipefail
+
+src=/etc/dotfiles
+home=/home/agent
+
+if [ ! -d "$src" ] || [ -z "$(ls -A "$src" 2>/dev/null)" ]; then
+    echo "no dotfiles mounted at $src; nothing to link"
+    exit 0
+fi
+
+cd "$src"
+find . -type f -not -path './.git/*' -print | while read -r found; do
+    rel=${found#./}
+    dest=$home/$rel
+    mkdir -p "$(dirname "$dest")"
+    # Only ever replace a symlink or a missing file. Anything the agent has
+    # written itself is left alone.
+    if [ -e "$dest" ] && [ ! -L "$dest" ]; then
+        echo "keeping existing $dest"
+        continue
+    fi
+    ln -sfn "$src/$rel" "$dest"
+done
+
+# Emacs writable state, which init.el is told to use through local.el.
+mkdir -p "$home/.local/state/emacs"
+chown -R agent:agent "$home"
+echo "dotfiles linked from $src"

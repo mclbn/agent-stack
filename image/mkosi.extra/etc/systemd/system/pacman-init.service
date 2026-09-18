@@ -1,0 +1,27 @@
+[Unit]
+Description=Initialise the pacman keyring and sync the package database
+# mkosi keeps both the keyring and the synced database on the build host,
+# inside its own sandbox tree, and copies neither into the image. Without the
+# keyring, any pacman transaction fails at signature checking; without the
+# database, `pacman -S` fails with "target not found" until someone runs -Sy.
+#
+# Done at boot rather than at build time because both need to execute inside
+# the image, which means mkosi-chroot, which the nixpkgs mkosi wrapper cannot
+# run. The database is also fresher this way: fetched now rather than on the
+# day the golden was built, which avoids the version skew that makes a
+# build-time sync go stale.
+#
+# Costs a few seconds on the first boot after each reset.
+ConditionPathExists=!/etc/pacman.d/gnupg/trustdb.gpg
+After=network-online.target agent-identity.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/pacman-key --init
+ExecStart=/usr/bin/pacman-key --populate archlinux
+ExecStart=/usr/bin/pacman -Sy --noconfirm
+
+[Install]
+WantedBy=multi-user.target

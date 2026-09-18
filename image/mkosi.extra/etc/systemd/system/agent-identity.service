@@ -1,0 +1,15 @@
+[Unit]
+Description=Configure sandbox identity from the read-only config mount
+DefaultDependencies=no
+After=etc-agent\x2dconfig.mount local-fs.target
+Wants=etc-agent\x2dconfig.mount
+Before=systemd-networkd.service network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/agent-identity
+
+[Install]
+WantedBy=multi-user.target

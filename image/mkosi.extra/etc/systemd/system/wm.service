@@ -1,0 +1,21 @@
+[Unit]
+Description=Window manager on :0
+ConditionPathExists=/usr/bin/i3
+After=xvnc.service
+Requires=xvnc.service
+Before=multi-user.target
+
+[Service]
+Type=simple
+User=agent
+Group=agent
+Environment=DISPLAY=:0
+# A frame needs a window manager to be resizable, focusable and to keep
+# keyboard focus sane; without one Emacs comes up as an unmanaged window.
+ExecStartPre=/usr/bin/xsetroot -solid grey20
+ExecStart=/usr/bin/i3
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

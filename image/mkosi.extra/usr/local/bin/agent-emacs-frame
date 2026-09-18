@@ -1,0 +1,24 @@
+#!/bin/bash
+# Ensure the daemon is running and exactly one graphical frame exists.
+#
+# `emacsclient -c` creates a frame every time it is called, so reconnecting
+# after closing the viewer would stack a second frame on the first, and a third
+# on that. What is wanted is idempotence: attach to the frame that is already
+# there, create one only if there is none.
+#
+# The daemon also inherits the working directory of whatever started it, not of
+# the ssh command that asks for a frame, so *scratch* would otherwise open in
+# the agent's home rather than the project.
+set -euo pipefail
+
+export DISPLAY=:0
+dir=${1:-/work}
+
+# -a "" starts the daemon if it is not running. framep returns the symbol x for
+# a graphical frame and t for the daemon's own terminal frame, which is how a
+# real frame is told from the placeholder every daemon has.
+exec emacsclient -a "" -e "(progn
+  (with-current-buffer \"*scratch*\" (setq default-directory \"$dir\"))
+  (unless (seq-find (lambda (f) (eq (framep f) 'x)) (frame-list))
+    (select-frame (make-frame-on-display \"$DISPLAY\")))
+  t)"

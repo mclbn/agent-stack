@@ -1,0 +1,8 @@
+# Passwordless root for the agent.
+#
+# There is no password to ask for: the account is key-only over ssh, and the
+# serial console is reachable only by root on L1. The sandbox is disposable and
+# assumed breached by design, so this grants nothing that escaping the VM would
+# not already give — while `pacman -S` inside the sandbox is the documented
+# answer to a missing package between image rebuilds.
+agent ALL=(ALL) NOPASSWD: ALL

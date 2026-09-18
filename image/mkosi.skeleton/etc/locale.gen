@@ -1,0 +1,11 @@
+# Locales generated into the image.
+#
+# A skeleton tree, not an extra tree: skeleton trees are copied in before the
+# package manager runs, so glibc's own locale-gen hook sees this file when it
+# fires during installation. An extra tree is copied afterwards, too late for
+# the hook, and generating the locale later would mean executing inside the
+# image — which is what mkosi-chroot does and what nixpkgs' mkosi wrapper
+# breaks.
+#
+# C.UTF-8 is built into glibc and needs no entry here.
+en_US.UTF-8 UTF-8

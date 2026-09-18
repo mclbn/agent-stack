@@ -1,0 +1,34 @@
+# Minimal i3 configuration for the sandbox display.
+#
+# Its presence is the point: without a config anywhere in i3's search path,
+# i3-config-wizard opens on first start and waits for a keypress that nobody is
+# there to give it.
+#
+# This is /etc/i3/config, the system fallback, so a ~/.config/i3/config coming
+# from your dotfiles takes precedence over it without any change here.
+
+# Super, not Alt. i3's usual Mod1 would swallow every M- chord before Emacs
+# saw it, which on this display is the main thing anyone is typing.
+set $mod Mod4
+
+font pango:monospace 10
+
+# Enough to be usable, and no more: the window manager exists so that frames
+# are focusable and resizable, not to be lived in.
+bindsym $mod+Return exec i3-sensible-terminal
+bindsym $mod+q kill
+bindsym $mod+d exec --no-startup-id dmenu_run
+bindsym $mod+f fullscreen toggle
+bindsym $mod+Shift+r restart
+
+# Arrow keys only: h/j/k/l would collide with everything typed in Emacs when
+# the modifier is held a moment too long.
+bindsym $mod+Left focus left
+bindsym $mod+Down focus down
+bindsym $mod+Up focus up
+bindsym $mod+Right focus right
+
+floating_modifier $mod
+
+# No bar: i3status is not installed, and a bar advertising a battery and a
+# wireless network that do not exist is worse than none.

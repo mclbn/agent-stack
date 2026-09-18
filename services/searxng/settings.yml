@@ -1,0 +1,23 @@
+# Minimal SearXNG settings, bind-mounted read-only over the image's own
+# /etc/searxng/settings.yml. The rest of /etc/searxng is left as the image
+# ships it.
+use_default_settings: true
+
+server:
+  # Not a secret in any meaningful sense — the instance is reachable only from
+  # the agents segment — but SearXNG refuses to start without one.
+  secret_key: "agent-stack-local-instance"
+  limiter: false
+  image_proxy: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  formats:
+    # The MCP server speaks JSON to SearXNG; the default install offers only
+    # HTML, and search calls fail with a format error without this.
+    - html
+    - json
+
+redis:
+  url: redis://valkey:6379/0
