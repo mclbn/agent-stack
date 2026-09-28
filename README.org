@@ -82,6 +82,18 @@ sudo pacman -S --needed libvirt qemu-full virtiofsd dnsmasq nix \
 sudo systemctl enable --now libvirtd.socket nix-daemon.socket
 #+END_SRC
 
+The Arch package ships no ~/nix~ directory. ~/nix/store~ and the daemon socket
+directory are created by ~systemd-tmpfiles~ from
+~/usr/lib/tmpfiles.d/nix-daemon.conf~, which pacman runs as a post-transaction
+hook. That hook does not always fire, and when it has not, ~nix build~ fails
+with ~error: opening file '/nix/store': No such file or directory~. Creating
+them is idempotent, so run it either way:
+
+#+BEGIN_SRC sh
+sudo systemd-tmpfiles --create /usr/lib/tmpfiles.d/nix-daemon.conf
+ls -ld /nix/store
+#+END_SRC
+
 Nix from the Arch package needs its daemon running, and the client needs to be
 told to use it. Without that, ~nix build~ tries to create ~/nix/store~ itself
 and fails on permissions. Arch ships the environment snippet in
@@ -2124,6 +2136,9 @@ build redownloading its packages.
 |                                                        | -A~.                                    |
 | ~error: creating directory "/nix/store"~               | The client is not using the daemon.     |
 |                                                        | ~export NIX_REMOTE=daemon~.             |
+| ~error: opening file '/nix/store'~                     | The store was never created. On Arch:   |
+|                                                        | ~sudo systemd-tmpfiles --create         |
+|                                                        | /usr/lib/tmpfiles.d/nix-daemon.conf~.   |
 | ~Cannot access storage file … (as uid:954)~            | The domain is not running as root.      |
 |                                                        | Check ~virsh dumpxml agent-l1~ carries  |
 |                                                        | the ~<seclabel>~ block, and that the    |
