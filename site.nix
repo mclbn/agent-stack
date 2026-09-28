@@ -9,11 +9,11 @@
   # The export root: the one directory tree on L0 exported to L1. Mode 0700,
   # owned by uid 1000. Every project is a direct child of it, and the workspace
   # for project <name> is <exportRoot>/<name>.
-  exportRoot = "/home/CHANGEME/work";
+  exportRoot = "/home/CHANGEME/agent-work";
 
   # Public half of the stack's ssh keypair. Generated on L0, never leaves it.
   #   ssh-keygen -t ed25519 -f ~/.ssh/agent-stack -C agent-stack
-  operatorSshKey = "ssh-rsa CHANGEME...";
+  operatorSshKey = "ssh...CHANGEME";
 
   # Where L1's disks live on L0. Root-owned, mode 0700.
   imageDir = "/var/lib/libvirt/images/agent";
@@ -46,6 +46,83 @@
     address = "10.99.0.2"; # L1
     prefixLength = 24;
     netmask = "255.255.255.0";
+  };
+
+  # ---------------------------------------------------------------- dns ----
+  # How L1's unbound reaches the public namespace. The internal zone is
+  # unaffected either way: <project>.agents.<internalDomain> and
+  # <name>.svc.<internalDomain> are answered from local data and never leave
+  # L1, whatever this is set to.
+  dns = {
+    # "recursive"  L1 walks from the root itself and validates every step
+    #              against the root trust anchor. No third party sees the
+    #              queries, and no resolver but this one is trusted. The
+    #              design's assumption, and correct wherever it works.
+    #
+    # "gateway"    Forward everything to wan.gateway — libvirt's dnsmasq on
+    #              L0 — which in turn uses whatever resolver the laptop
+    #              currently has. The address is on our own bridge and never
+    #              changes, so this one value is portable: it means "whatever
+    #              DNS this laptop is using", at home or anywhere else.
+    #
+    # a list       Forward to these addresses instead. If *every* entry
+    #              carries @853 the stack turns on DoT, which is the setting
+    #              for a network you do not trust: port 853 cannot be
+    #              intercepted by a port-53 redirect, and you choose the
+    #              resolver rather than inheriting whoever runs the WiFi.
+    #
+    #                resolver = [
+    #                  "9.9.9.9@853#dns.quad9.net"
+    #                  "149.112.112.112@853#dns.quad9.net"
+    #                ];
+    #
+    # *If name resolution stops working, try "gateway" first.* Recursion is
+    # impossible on a network that redirects outbound port 53 to its own
+    # resolver — a captive portal, a corporate LAN, or a router with a DNS
+    # capture of your own making. The symptom is specific and is described
+    # under "If something goes wrong" in the README: ping to an address works,
+    # every name fails, and `dig @127.0.0.1 . NS` on L1 returns SERVFAIL.
+    #
+    # Interception is invisible to an ordinary client, which asks a resolver
+    # one question and does not care who answers. It is fatal to a resolver,
+    # which asks specific authoritative servers with recursion *not* desired —
+    # and an interceptor refuses exactly those. L1 is normally the only
+    # machine on a home network doing the second thing.
+    #
+    # DNSSEC is validated on L1 in every mode: forwarding moves where the walk
+    # happens, not who checks the signatures.
+    resolver = "recursive";
+
+    # Zones the upstream resolver is authoritative for that the public root
+    # says do not exist. Forwarding to a router that serves "home.lan." needs
+    # that name listed here or the validator will — correctly — refuse the
+    # answer. Empty by default: agents have no business reaching the LAN, and
+    # the forward rules drop it anyway.
+    insecureDomains = [ ];
+  };
+
+  # ---------------------------------------------------------------- ntp ----
+  # L1 is the only time source the sandboxes can reach, and TLS everywhere
+  # downstream depends on its clock.
+  ntp = {
+    # Pool names. Resolved through L1's own unbound, so they are unavailable
+    # for as long as DNS is.
+    pools = [
+      "0.pool.ntp.org"
+      "1.pool.ntp.org"
+      "2.pool.ntp.org"
+      "3.pool.ntp.org"
+    ];
+
+    # At least one source reachable with no DNS at all. Without this the stack
+    # has a deadlock it cannot leave on its own: a clock far enough out breaks
+    # DNSSEC, which breaks resolution, which is how chrony finds the servers
+    # that would fix the clock. Anycast addresses for time.cloudflare.com;
+    # any stable literal does the job.
+    addresses = [
+      "162.159.200.1"
+      "162.159.200.123"
+    ];
   };
 
   # --------------------------------- sandbox console (baked into the golden)
@@ -129,13 +206,28 @@
 
   # ------------------------------------------------------------- dotfiles --
   # A directory on L0 holding the configuration files that belong in every
-  # sandbox's home. Exported to L1 by virtiofs and re-exported to each sandbox
-  # exactly as the workspace is, so an edit here is visible inside every
-  # running sandbox at once: no pull, no copy on L1, nothing to drift.
+  # sandbox's home. Exported to L1 by virtiofs and re-exported to each sandbox,
+  # where it is *copied* into /home/agent when the sandbox is created.
   #
-  # Mounted read-only in the sandbox. Note the boundary this is *not*: the
-  # L0-to-L1 hop is writable, so a root agent that remounts the guest side
-  # could write back to this directory. Keep it to configuration.
+  # Copied, once. A sandbox is seeded at creation and owns its copies from then
+  # on: an agent may edit any of them, the edits survive `agent stop`, nothing
+  # propagates back here, and no two sandboxes affect each other. Nothing is
+  # re-read on a later boot or attach, so a change made here reaches an
+  # existing sandbox only through `agent reset` — which takes a fresh copy and
+  # discards whatever the agent changed, since both live on the same overlay.
+  #
+  # Note the boundary this is *not*. The mount is read-only, but the copies are
+  # not: an agent can rewrite its own configuration inside the sandbox, and you
+  # will not see that from here. What the read-only mount buys is that it
+  # cannot reach back to this directory. The L0-to-L1 hop is writable, so a
+  # root agent that remounts the guest side could still write here — keep this
+  # to configuration.
+  #
+  # Symlinks in this directory are ignored, and named in the sandbox's journal
+  # rather than skipped in silence. They cannot be followed: virtiofs passes
+  # the link text through unchanged and the sandbox resolves it against its own
+  # filesystem, where L0's paths do not exist. Keep real files here, or point
+  # this at the tree the links lead to.
   dotfilesRoot = "/home/CHANGEME/agent-dotfiles";
 
   # ---------------------------------------------------------- credentials --

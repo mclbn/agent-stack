@@ -20,13 +20,55 @@ let
   squidHttp = 3129;
   squidHttps = 3130;
   squidCert = "/data/state/squid/squid.pem";
+
+  # How unbound reaches the public namespace; the choice and the reasoning
+  # both live under dns.resolver in site.nix. Empty means recurse.
+  forwarders =
+    if builtins.isList site.dns.resolver then
+      site.dns.resolver
+    else if site.dns.resolver == "gateway" then
+      [ site.wan.gateway ]
+    else
+      [ ];
+
+  # All, not any: a mixed list would silently send some queries in clear, and
+  # a forwarder that can be intercepted defeats the reason for choosing one.
+  forwardOverTls = forwarders != [ ] && lib.all (a: lib.hasInfix "@853" a) forwarders;
 in
 {
   # ------------------------------------------------------------- unbound ---
-  # Recursive with DNSSEC validation, not forwarding: the host has direct
-  # internet access at the primary site. Also the authority for internal names,
-  # through a zone file that agentctl writes under the same flock as
-  # alloc.jsonl, so the two cannot drift.
+  # DNSSEC-validating, and by default recursive rather than forwarding: at the
+  # primary site the host has direct internet access, so nothing but the root
+  # anchor has to be trusted. Where that is not true — any network that
+  # redirects outbound port 53 to its own resolver — dns.resolver in site.nix
+  # switches this to forwarding without touching anything here. Validation
+  # stays on L1 in both modes.
+  #
+  # Also the authority for internal names, through a zone file that agentctl
+  # writes under the same flock as alloc.jsonl, so the two cannot drift.
+  assertions = [
+    {
+      assertion =
+        builtins.isList site.dns.resolver || builtins.elem site.dns.resolver [ "recursive" "gateway" ];
+      message = ''site.nix: dns.resolver must be "recursive", "gateway", or a list of forward addresses'';
+    }
+  ];
+
+  # A forward-zone for "." replaces the iterator's starting point, nothing
+  # else: local-zone and local-data are still consulted first, so the internal
+  # names never leave L1.
+  services.unbound.settings.forward-zone = lib.mkIf (forwarders != [ ]) [
+    (
+      {
+        name = ".";
+        forward-addr = forwarders;
+      }
+      # tls-cert-bundle is set by the module, so the upstream is authenticated
+      # rather than merely encrypted to.
+      // lib.optionalAttrs forwardOverTls { forward-tls-upstream = true; }
+    )
+  ];
+
   services.unbound = {
     enable = true;
     resolveLocalQueries = true;
@@ -49,6 +91,9 @@ in
       log-queries = true;
       verbosity = 1;
       include = "/data/state/unbound-zones.conf";
+      # Names an upstream forwarder is authoritative for that the public root
+      # says do not exist. Empty unless site.nix says otherwise.
+      domain-insecure = site.dns.insecureDomains;
     };
   };
 

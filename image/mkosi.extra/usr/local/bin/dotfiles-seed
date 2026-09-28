@@ -1,0 +1,86 @@
+#!/bin/bash
+# Copy dotfiles from the read-only mount into the agent's home, once.
+#
+# Once is the whole design. A sandbox is seeded with your configuration when it
+# is created and then owns it: an agent may edit any of these files, nothing
+# propagates back to L0, and no later boot or attach touches them again. To
+# push a change from L0 into an existing sandbox, `agent reset` it — which also
+# discards whatever the agent changed, because the two are the same overlay.
+#
+# Copies rather than symlinks into the mount, which is what makes the files
+# writable. The mount stays read-only: it is the source, not the destination.
+#
+# Symlinks in dotfilesRoot are ignored, and reported. They cannot be honoured
+# here: virtiofs passes the link text through verbatim and the guest resolves
+# it against its own filesystem, so a link to /home/you/dotfiles/... is
+# dangling in the sandbox no matter what this script does. Dereferencing would
+# have to happen on L0, where the target exists. Keep real files in
+# dotfilesRoot, or point dotfilesRoot at the tree the links lead to.
+set -euo pipefail
+
+src=/etc/dotfiles
+home=/home/agent
+marker=/var/lib/agent-dotfiles/seeded
+
+# The marker is normally checked by the unit's ConditionPathExists, which is
+# what makes this a no-op on every boot after the first. Repeated here so that
+# running the script by hand cannot quietly re-seed a sandbox an agent has been
+# working in.
+if [ -e "$marker" ]; then
+    echo "already seeded on $(cat "$marker" 2>/dev/null); nothing to do"
+    echo "to seed again: rm $marker && systemctl start dotfiles-seed.service"
+    exit 0
+fi
+
+# nofail on the mount, so this is a real case rather than a defensive one.
+# Deliberately no marker on this path: a sandbox that has never been seeded has
+# no state worth protecting, so the next boot may try again. Once anything has
+# been copied, that stops for good.
+if [ ! -d "$src" ] || [ -z "$(ls -A "$src" 2>/dev/null)" ]; then
+    echo "no dotfiles mounted at $src; not seeding, will retry on next boot"
+    exit 0
+fi
+
+copied=0
+kept=0
+ignored=0
+
+# Reported rather than skipped in silence: a symlink that simply never appears
+# in the sandbox is indistinguishable from one that arrived, which is exactly
+# how this went unnoticed before.
+while IFS= read -r link; do
+    echo "ignoring symlink ${link#./} -> $(readlink "$src/${link#./}")"
+    ignored=$((ignored + 1))
+done < <(cd "$src" && find . -type l -not -path './.git/*' -print)
+
+while IFS= read -r found; do
+    rel=${found#./}
+    dest=$home/$rel
+    mkdir -p "$(dirname "$dest")"
+    # A symlink here is either this script's own output from an older image or
+    # something the agent linked; neither is a file to preserve, and copying
+    # onto it would write through to the read-only mount.
+    [ -L "$dest" ] && rm -f "$dest"
+    if [ -e "$dest" ]; then
+        echo "keeping existing $dest"
+        kept=$((kept + 1))
+        continue
+    fi
+    # mode, so an executable in the dotfiles stays executable; timestamps, so
+    # anything comparing mtimes sees the source's. Not ownership: that is set
+    # below, and the mount carries L0's.
+    cp --preserve=mode,timestamps "$src/$rel" "$dest"
+    copied=$((copied + 1))
+done < <(cd "$src" && find . -type f -not -path './.git/*' -print)
+
+# Emacs writable state, which init.el is told to use through local.el.
+mkdir -p "$home/.local/state/emacs"
+chown -R agent:agent "$home"
+
+# Last, and only now: everything above succeeded, so this sandbox is seeded and
+# will not be touched again.
+mkdir -p "$(dirname "$marker")"
+date -Is > "$marker"
+
+printf 'seeded from %s: %d copied, %d kept, %d symlink(s) ignored\n' \
+       "$src" "$copied" "$kept" "$ignored"

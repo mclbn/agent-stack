@@ -343,9 +343,10 @@ now.
 
 | Setting         | Why it is awkward later                                          |
 |-----------------+------------------------------------------------------------------|
-| ~guest.profile~   | ~light~ has no editor, no display stack and no document            |
-|                 | toolchain. Moving to ~full~ means building the image again and     |
-|                 | resetting every project: tens of minutes, and around 20 GB.      |
+| ~guest.profile~   | ~light~ has no Emacs, no display stack and no document             |
+|                 | toolchain — ~vi~ and ~nano~ are in both. Moving to ~full~ means      |
+|                 | building the image again and resetting every project: tens of    |
+|                 | minutes, and around 20 GB.                                       |
 | ~l1.dataDiskSize~ | ~install~ creates the data disk only if it is absent, and never    |
 |                 | touches it again — that is what protects your state on every     |
 |                 | later run. Growing it afterwards is a manual resize of the file  |
@@ -369,6 +370,10 @@ moment you make one.
 |                                                     | next attach.                           |
 | ~logging.*~, ~serviceStacks~, ~agents.*~,           | ~nix run '.#deploy'~                   |
 | ~sandbox.memoryMiB~, ~sandbox.vcpu~                 |                                        |
+| ~dns.*~, ~ntp.*~                                    | ~nixos-rebuild … switch~ — in place,   |
+|                                                     | about fifteen seconds, no reboot and   |
+|                                                     | no image swap. See "Change how DNS is  |
+|                                                     | resolved".                             |
 | ~exportRoot~, ~dotfilesRoot~, ~operatorSshKey~,     | ~nix run '.#deploy'~, which redefines  |
 | ~l1.memoryMiB~, ~l1.vcpu~, ~l1.cpuQuota~,           | the libvirt domain as well as          |
 | ~l1.cpuPeriod~, ~l1.systemDiskMiB~                  | replacing the system disk              |
@@ -424,6 +429,30 @@ the rest. Nothing here is explained twice: if you need the reasoning, follow
 the link.
 
 ** Day to day
+
+*** Start L1 after a host reboot
+
+L1 is defined as a libvirt domain but does not start on its own, so after a
+host reboot nothing works until it is up: ~agent~ talks to L1 over ssh and
+fails at the first command without it. ~/data~ — overlays, logs, configuration
+— is untouched by a reboot.
+
+#+BEGIN_SRC sh
+sudo virsh start agent-l1              # this boot
+sudo virsh autostart agent-l1          # once, then every boot from now on
+#+END_SRC
+
+The two are not alternatives: ~start~ powers it on now, ~autostart~ records a
+preference libvirt acts on at every host boot and does nothing to the machine
+today. Set autostart once and the command above stops being something you have
+to remember. ~sudo virsh autostart --disable agent-l1~ undoes it.
+
+~ssh l1 true~ answers once it is ready.
+
+~nix run '.#deploy'~ also leaves L1 running, which makes it a tempting habit,
+but it builds and installs a new system image and replaces L1's system disk
+with it. It is for a changed carrier configuration, not for turning the machine
+on — see [[*Changing the carrier configuration][Changing the carrier configuration]].
 
 *** Is everything healthy?
 
@@ -492,20 +521,65 @@ and ~agent emacs~ again finds the same frame rather than stacking a second one.
 
 ** Changing the configuration
 
+*** Set environment variables
+
+One file, ~.ssh/environment~ in ~dotfilesRoot~, seeded into each sandbox like
+any other dotfile and editable in place afterwards.
+
+#+BEGIN_SRC sh
+$EDITOR ~/agent-dotfiles/.ssh/environment
+#+END_SRC
+
+#+BEGIN_EXAMPLE
+# Blank lines and # comments are ignored.
+EDITOR=nano
+VISUAL=nano
+GIT_EDITOR=nano
+PAGER=less
+LESS=-R
+#+END_EXAMPLE
+
+Plain ~NAME=value~, one per line. No ~export~, no shell, and the value is the
+rest of the line taken literally: ~$HOME~ and ~~~ stay as written, so use
+absolute paths. *Do not quote.* sshd keeps the quotes as part of the value
+while systemd strips them, and ~wm.service~ reads the same file — quoting is
+the one way to make the two readers disagree.
+
+~PATH~ cannot be expressed here at all, since it has to build on the value it
+already has. That stays in ~/etc/profile.d/agent-path.sh~ in the image.
+
+Why this file and not ~.profile~: sshd applies it before it execs anything, so
+it lands before any shell and works whichever shell you use. Every ~agent~ verb
+is an ssh command session, which is the case a shell rc file misses — see
+[[*What reads it, and what does not][What reads it, and what does not]].
+
+After an edit, a new session picks it up. Two things keep their own copy: the
+Emacs daemon caches its environment for life, and ~wm.service~ reads the file
+at start.
+
+#+BEGIN_SRC sh
+ssh demo.agents.contained 'emacsclient -e "(kill-emacs)"'   # then: agent emacs demo
+ssh demo.agents.contained 'sudo systemctl restart wm'
+#+END_SRC
+
 *** Edit the dotfiles
 
-Editing a file needs no command at all: ~dotfilesRoot~ is on L0 and mounted
-into every sandbox, so a save is live — see
+An edit reaches the *next* sandbox created, not the ones already running — see
 [[*The agent wrapper][The agent wrapper]].
 
 #+BEGIN_SRC sh
-$EDITOR ~/agent-dotfiles/.config/emacs/init.el   # live, restart what read it
-agent sync-config demo                           # only for a *new* file
+$EDITOR ~/agent-dotfiles/.config/emacs/init.el   # affects the next creation
+agent reset demo                                 # take a fresh copy now
 #+END_SRC
 
-A new file needs the nudge because the symlinks into the agent's home are made
-by a unit at boot. Every ~agent~ command re-runs it, so a new file also appears
-on the next attach; ~sync-config~ is for mid-session.
+A sandbox is seeded from ~dotfilesRoot~ when it is created and owns its copies
+from then on. There is no command to push a later change into a running one:
+~reset~ is it, and it discards whatever the agent changed along the way,
+because the copies and the agent's edits are on the same overlay.
+
+For a one-off change mid-session, edit the file inside the sandbox — it is an
+ordinary writable file there. Nothing propagates back to L0, and a ~reset~
+discards it.
 
 *** Change a setting in site.nix
 
@@ -729,6 +803,34 @@ separate config directories, and a server registered without it lands in a
 third place neither session reads. Registration is on the overlay, so it
 survives ~stop~ and is gone after ~reset~. For opencode it is an ~mcp~ block in
 ~opencode.json~ in your dotfiles.
+
+*** Change how DNS is resolved
+
+One setting, ~dns.resolver~ in ~site.nix~ — see
+[[*The resolver, and networks that will not allow one][The resolver, and
+networks that will not allow one]].
+
+#+BEGIN_SRC sh
+$EDITOR site.nix        # resolver = "recursive" | "gateway" | [ "9.9.9.9@853#dns.quad9.net" ]
+git add -A
+nix run 'nixpkgs#nixos-rebuild' -- switch --flake '.#agentvm' --target-host root@l1
+ssh l1 'dig @127.0.0.1 example.com +short'
+#+END_SRC
+
+~recursive~ is the default and the right answer wherever it works: L1 walks
+from the root itself, and no resolver but its own is trusted. ~gateway~
+forwards to ~wan.gateway~, which is libvirt's dnsmasq on L0 and therefore
+follows whatever DNS the laptop currently has — one value that is correct on
+every network. A list forwards somewhere you name, and turns on DoT if every
+entry carries ~@853~.
+
+Running sandboxes survive it. Unbound restarts and its cache empties, so the
+next few lookups are slower; nothing else notices. DNSSEC is validated on L1
+in all three modes.
+
+*If names have stopped resolving, ~gateway~ is the first thing to try* — see
+the DNS rows under [[*If something goes wrong][If something goes wrong]] for
+how to tell in two commands whether that is the problem you have.
 
 *** Iterate on firewall rules
 
@@ -986,8 +1088,7 @@ NixOS generations and rollback history go with it — acceptable, because
 nothing that has to survive lives on the system disk. That is what ~/data~ is
 for. ~switch~ keeps the generations and is
 far quicker for a one-line change, but leaves the system disk drifting from the
-image until the next deploy. The domain does not autostart; ~virsh autostart
-agent-l1~ if that is wanted.
+image until the next deploy.
 
 * The golden image
 
@@ -1223,37 +1324,77 @@ nix run '.#golden-build'
 | ~agent stop <project>~          | power off, overlay intact                                      |
 | ~agent reset <project>~         | stop, then delete the overlay                                  |
 | ~agent capture <project> start~ | pcap on that project's tap; ~stop~ ends it                     |
-| ~agent sync-config <project>~   | pull the dotfiles now                                          |
 | ~agent service <verb> [name]~   | the L1 service stacks: ~list~, ~status~, ~logs~, ~restart~     |
-| ~--no-sync~                     | skip the dotfiles pull this time                               |
 
-Every attaching command does the same four things: ensure the sandbox exists
-and runs, relink the dotfiles unless told not to, push credentials, and attach
-inside tmux so a long run survives a dropped connection.
+Every attaching command does the same three things: ensure the sandbox exists
+and runs, push credentials, and attach inside tmux so a long run survives a
+dropped connection. Dotfiles are deliberately not among them — see below.
 
 *Dotfiles.* ~dotfilesRoot~ is a directory on L0 — ~~/agent-dotfiles~ by
 default — exported to L1 by virtiofs and re-exported read-only into every
-sandbox at ~/etc/dotfiles~, exactly as the workspace is. An edit on L0 is
-visible inside every running sandbox the moment it is saved: no pull, no copy
-on L1, nothing that can drift. Restart whatever read the file and the change
-is live.
+sandbox at ~/etc/dotfiles~. From there ~dotfiles-seed.service~ *copies* it into
+~/home/agent~ the first time the sandbox boots, and never again.
 
-What is *not* instant is a newly added file, because the symlinks into the
-agent's home are made by a unit at boot. Every ~agent~ invocation re-runs that
-unit, so a new file appears on the next attach; ~agent sync-config <project>~
-does it mid-session.
+Once, and then the sandbox owns them. The copies are writable, so an agent may
+edit its own configuration; the edits survive ~agent stop~; nothing propagates
+back to L0; and no two sandboxes can affect each other. No later boot and no
+~agent~ command re-reads the mount, so a change on L0 reaches an existing
+sandbox only through ~agent reset~ — which takes a fresh copy and discards the
+agent's edits, since both live on the same overlay.
 
 Layout mirrors a home directory: ~~/agent-dotfiles/.config/emacs/init.el~
-becomes ~~/.config/emacs/init.el~ in the sandbox. Individual *files* are
-symlinked, never directories, so ~~/.config~ stays writable on the overlay.
-~init.el~ should load the generated per-project fragment, which ~agentctl~
-writes on L1 and mounts read-only — see
-[[*The display, and Emacs][The display, and Emacs]] for what it contains.
+becomes ~~/.config/emacs/init.el~ in the sandbox. File modes are preserved, so
+an executable stays executable. ~.git/~ is skipped. ~init.el~ should load the
+generated per-project fragment, which ~agentctl~ writes on L1 and mounts
+read-only — see [[*The display, and Emacs][The display, and Emacs]] for what it
+contains.
 
-The boundary this crosses, deliberately: the L0-to-L1 hop is writable, so a
-root agent that remounts the guest side could write back to ~dotfilesRoot~ on
+*Symlinks in ~dotfilesRoot~ are ignored*, and named in the sandbox's journal
+rather than skipped in silence. They cannot be followed: virtiofs passes the
+link text through unchanged and the sandbox resolves it against its own
+filesystem, where L0's paths do not exist — so a link would be dangling there
+whatever the seeding did. Dereferencing would have to happen on L0. Keep real
+files in ~dotfilesRoot~, or point it at the tree the links lead to.
+
+#+BEGIN_SRC sh
+ssh demo.agents.contained 'journalctl -u dotfiles-seed'   # what was copied, and what was not
+#+END_SRC
+
+Two boundaries worth being explicit about. The mount is read-only and the
+copies are not, so an agent can rewrite its own configuration inside the
+sandbox and you will not see that from L0. And the L0-to-L1 hop is writable, so
+a root agent that remounts the guest side could write back to ~dotfilesRoot~ on
 your laptop. Keep that directory to configuration, and keep nothing there you
 would mind a sandbox reaching.
+
+*** What reads it, and what does not
+
+Environment variables are one of the seeded files: ~.ssh/environment~, read by
+sshd because the image sets ~PermitUserEnvironment yes~. Format and examples
+are under [[*Set environment variables][Set environment variables]].
+
+sshd is the right hook because it is the only one that sees every path in.
+Everything below enters the sandbox the same way — ~ssh host <command>~ — and
+sshd applies the file before it execs anything, so the environment is in place
+before any shell decides which of its rc files to read. That matters because
+those four paths disagree:
+
+| Path                        | What actually runs                                | Shell rc read? |
+|-----------------------------+---------------------------------------------------+----------------|
+| ~agent shell~               | tmux with no command, so tmux starts a login shell | yes            |
+| ~agent claude~, ~codex~,    | tmux *with* a command, so ~$SHELL -c "…"~          | no             |
+| ~opencode~                  |                                                   |                |
+| ~agent emacs~               | ~bash -c 'agent-emacs-frame /work'~               | no             |
+| a frame or subprocess of it | inherits the daemon, which inherits the above     | n/a            |
+
+A shell rc file therefore covers exactly one of them; ~.ssh/environment~ covers
+all four, and does so whichever shell you switch to.
+
+What it does *not* reach is anything systemd starts, which is not an ssh
+session at all. ~wm.service~ reads the same file explicitly through
+~EnvironmentFile=~, so a program launched from i3 is covered too — any future
+GUI unit wants those two lines and the ~After=dotfiles-seed.service~ that goes
+with them.
 
 *Credentials.* See "Credentials" below. Briefly: they are fetched on L0 by
 whatever command you name, pushed into tmpfs in the sandbox, and cleared by
@@ -1264,7 +1405,7 @@ whatever command you name, pushed into tmpfs in the sandbox, and cleared by
 #+BEGIN_SRC sh
 agent shell demo                       # attaches; ctrl-b d to detach
 ssh demo.agents.contained 'ls -l /run/creds; findmnt /run/creds'
-ssh demo.agents.contained 'ls -l ~/ | head'   # dotfiles symlinks
+ssh demo.agents.contained 'ls -l ~/ | head'   # dotfiles, as ordinary files
 ssh l1 'findmnt /srv/dotfiles'         # the L0 export reached L1
 agent stop demo && agent shell demo    # creds gone after stop, pushed again
 #+END_SRC
@@ -1322,6 +1463,73 @@ are not, because the connection is then spliced rather than decrypted.
 Containers started inside a sandbox are covered by the same rules, with no
 special case: their traffic is given the sandbox's own address before it
 leaves the VM, so ~docker pull~ meets exactly what everything else meets.
+
+** The resolver, and networks that will not allow one
+
+L1 runs unbound as a *recursive* resolver by default: given ~google.fr~ it asks
+a root server which servers are authoritative for ~fr.~, asks one of those
+about ~google.fr.~, and asks one of those for the record. Every step is
+validated against the root trust anchor, and no third party sees the whole
+picture of what was asked.
+
+*That is exactly what a transparent DNS redirect makes impossible*, and the
+distinction is worth holding on to because it explains a failure that otherwise
+makes no sense.
+
+An ordinary client — your laptop, a phone, a sandbox — runs a *stub* resolver.
+It sends one query with the recursion-desired bit set, meaning "you go and find
+this". It does not care who receives it, so a rule that rewrites the
+destination is invisible: some resolver answers, the client is satisfied. This
+is why a capture on a home router works on every machine in the house.
+
+A recursive resolver never asks that question. Each of its queries is addressed
+to one specific authoritative server with recursion *not* desired, meaning
+"answer only from what you are authoritative for". Redirect those to a
+recursive resolver and it refuses them, correctly — it is authoritative for
+nothing. Priming the root fails, so there is no second step, so every public
+name fails. L1 is normally the only machine on a home network doing this, which
+is why it is the only one that breaks.
+
+The consequence is a symptom that looks like a network fault and is not:
+~ping 8.8.8.8~ works, ~dig @9.9.9.9 example.com~ works, and every name fails
+anyway. The second of those is the trap — it is a recursion-desired query, the
+one shape an interceptor is happy to serve.
+
+~dns.resolver~ in ~site.nix~ chooses between three ways of reaching the public
+namespace. The internal zone is answered from local data before any of this and
+is unaffected by all of it.
+
+| Setting     | What it costs, and what it buys                                    |
+|-------------+--------------------------------------------------------------------|
+| ~recursive~ | The default, and correct wherever it works. Nothing is trusted but |
+|             | the root anchor, and the queries are spread over hundreds of       |
+|             | authoritative servers, so no single party sees your traffic.       |
+|             | Impossible on a network that redirects port 53.                    |
+| ~gateway~   | Forwards to ~wan.gateway~ — libvirt's dnsmasq on L0, which uses    |
+|             | whatever resolver the laptop currently has. The address is on our  |
+|             | own bridge, so this one value is portable: it means "whatever DNS  |
+|             | this laptop is using", at home or in a hotel. In exchange, that    |
+|             | network's resolver is in the trust path: its logging, its          |
+|             | blocklists, its outages, and a complete view of what was asked.    |
+| a list      | Forwards to addresses you name. With ~@853~ on every entry the     |
+|             | stack turns on DoT, which is the setting for a network you do not  |
+|             | trust — port 853 cannot be caught by a port-53 redirect, and you   |
+|             | choose the resolver instead of inheriting it.                      |
+
+Three things hold in every mode. The internal zone never leaves L1. The query
+log is unchanged, because ~log-queries~ records what unbound was *asked*, not
+how it answered — so the per-sandbox census survives forwarding intact. And
+DNSSEC is validated on L1: forwarding moves where the walk happens, not who
+checks the signatures. That last one has a visible consequence — a network
+whose resolver strips signatures will SERVFAIL rather than resolve, which is a
+correct refusal and usually means a captive portal you have not signed into.
+
+If you forward to a resolver that serves a private zone of its own, list that
+zone in ~dns.insecureDomains~. The public root proves it does not exist, and
+without that entry the validator will refuse the answer.
+
+*Untested.* ~recursive~ and ~gateway~ are both exercised. The DoT list form is
+reasoned from the same mechanism and has not been run end to end.
 
 ** Iterating on rules
 
@@ -1507,16 +1715,16 @@ including the very end: neither setting cares when it runs.
 
 It carries two settings, and only two. ~auth-sources~ points at the pushed
 credentials, which a portable configuration has no way to know. ~custom-file~
-moves Custom's writes off the read-only mount — untouched, Custom writes into
-~init.el~, which is a symlink into the dotfiles, and the first
-~M-x customize~ fails.
+keeps Custom's writes out of ~init.el~ — which is a writable copy, so the write
+would otherwise succeed and append generated forms to configuration you
+maintain on L0, where you cannot see them and ~agent reset~ discards them
+without a word.
 
 It deliberately does *not* redirect ~package-user-dir~ or the eln cache.
-Individual files are symlinked into the home, never directories, so
-~~/.config/emacs/~ is a real writable directory on the overlay and the defaults
-work. Packages and native-compiled output therefore live on the overlay: they
-survive ~agent stop~ and are discarded by ~agent reset~, which is what makes
-the first Emacs launch after a reset slow.
+~~/.config/emacs/~ is an ordinary writable directory on the overlay, so the
+defaults work. Packages and native-compiled output therefore live on the
+overlay: they survive ~agent stop~ and are discarded by ~agent reset~, which is
+what makes the first Emacs launch after a reset slow.
 
 *Checks:*
 
@@ -1764,8 +1972,13 @@ rebuilds.
 * Configuring the agents
 
 Agent configuration belongs in ~dotfilesRoot~ on L0, laid out as it would be in
-a home directory. It is live: an edit is visible in every running sandbox at
-once, and only a *new* file needs ~agent sync-config <project>~ to be linked.
+a home directory. Each sandbox is seeded with a copy when it is created and
+owns it from then on, so an edit here reaches the next sandbox created; ~agent
+reset~ takes a fresh copy into an existing one.
+
+Environment variables go in ~.ssh/environment~ there, which sshd applies to
+every session and ~wm.service~ reads for the display side — one file covering
+both, see [[*Set environment variables][Set environment variables]].
 
 Keys never go in these files. They arrive in ~/run/creds/env~ on tmpfs, and a
 config refers to them by name, so nothing secret is ever written to the
@@ -1952,6 +2165,64 @@ build redownloading its packages.
 |                                                        | 0666 and this should not arise; ~ls -l  |
 |                                                        | /dev/kvm~ shows whether something on    |
 |                                                        | the host has narrowed it.               |
+| A variable in ~.ssh/environment~ is missing everywhere | The image predates                      |
+|                                                        | ~PermitUserEnvironment yes~, and sshd   |
+|                                                        | ignores the file in silence. ~sshd -T   |
+|                                                        | \vert grep permituserenv~ on the guest  |
+|                                                        | says which you have.                    |
+| …missing only in ~agent emacs~                         | The daemon caches its environment for   |
+|                                                        | life. ~emacsclient -e "(kill-emacs)"~,  |
+|                                                        | then ~agent emacs~ again.               |
+| …missing only in programs launched from i3             | ~wm.service~ reads the file at start:   |
+|                                                        | ~systemctl restart wm~.                 |
+| …a value has stray quotes around it                    | sshd keeps quotes as part of the value. |
+|                                                        | Write ~NAME=some value~, never quoted.  |
+| Every name fails but ~ping 8.8.8.8~ works              | DNS, and almost certainly the           |
+|                                                        | interception case. Run the two-command  |
+|                                                        | check below before anything else.       |
+| ~chronyc tracking~ says stratum 0, ref time 1970       | chrony has no source. Usually downstream |
+|                                                        | of the row above: the pool names cannot  |
+|                                                        | resolve. Fixing DNS fixes it. If DNS is  |
+|                                                        | healthy, ~ntp.addresses~ in ~site.nix~   |
+|                                                        | is empty or unreachable.                 |
+
+** When no name resolves
+
+Two commands on L1 separate the three things this can be. Run them in order and
+stop at the first that tells you something.
+
+#+BEGIN_SRC sh
+ssh l1
+dig @127.0.0.1 . NS            # can unbound prime the root at all?
+dig @192.0.2.1 example.com     # TEST-NET-1. Nothing exists at this address.
+#+END_SRC
+
+| What you see                            | What it is                                     |
+|-----------------------------------------+------------------------------------------------|
+| Second command *returns an answer*      | Port 53 is being intercepted. Nothing exists   |
+|                                         | at ~192.0.2.1~, so whatever replied is a       |
+|                                         | proxy answering for every address you send to  |
+|                                         | 53. Recursion cannot work here. Set            |
+|                                         | ~dns.resolver = "gateway"~ and switch.         |
+| First SERVFAILs, second times out       | Unbound cannot reach the roots: outbound 53 is |
+|                                         | blocked rather than redirected. Same fix, or a |
+|                                         | DoT list if 853 is open.                       |
+| First answers, names still fail         | Not the resolver. Check ~date -u~ against      |
+|                                         | reality — a clock outside the signatures'      |
+|                                         | validity window fails every signed name —      |
+|                                         | then ~/data/logs/unbound.log~, which now       |
+|                                         | records the reason for each SERVFAIL.          |
+
+Two things that look like evidence and are not. ~dig @9.9.9.9 example.com~
+succeeding proves nothing: it is a recursion-desired query, which is precisely
+what an interceptor serves happily. And ~chronyc~ reporting no sources is a
+symptom rather than a cause — chrony finds its pools through the resolver that
+has just broken.
+
+A recursive resolver is the thing on your network most sensitive to this, so
+the trigger is usually a change of network rather than a change of
+configuration: a hotel, a hotspot, a new router, a VPN client that installs a
+redirect on connect, or a DNS capture of your own on the LAN you came home to.
 
 * Future improvements
 
@@ -1995,6 +2266,13 @@ compiles. Fixing it means running Emacs inside the image during the build,
 which needs ~mkosi-chroot~, which the nixpkgs mkosi wrapper cannot run. The
 honest options are building the golden on a host that can chroot, or accepting
 the per-reset compile.
+
+*The DoT form of ~dns.resolver~ has not been run end to end.* ~recursive~ and
+~gateway~ are both exercised daily. A list of ~@853~ addresses turns on
+~forward-tls-upstream~ and relies on the module's ~tls-cert-bundle~ to
+authenticate the upstream; the mechanism is ordinary unbound, but if 853 is
+blocked on the network you are on, the failure will look like the port-53 case
+and the fix is ~gateway~.
 
 *~internalDomain~ lives in three places*: ~site.nix~, ~host/ssh_config~, and
 the copy of that you appended to ~~/.ssh/config~. The first two could be one —

@@ -217,18 +217,31 @@
   # --------------------------------------------------------------- time ---
   # L1 takes the laptop's suspend jump itself and serves time downstream from
   # slice 4, so it steps large offsets rather than slewing them.
+  #
+  # The literal addresses are not redundancy, they are the way out of a
+  # deadlock. A pool name has to be resolved before it can be used, and it is
+  # resolved by an unbound that validates DNSSEC — which needs a clock inside
+  # the signatures' validity window. Given only names, a carrier that boots
+  # with a bad clock, or one whose DNS is broken for any other reason, has no
+  # reachable source and cannot recover on its own; `chronyc tracking` reports
+  # stratum 0 and a 1970 reference time forever. One address chrony can use
+  # without asking anybody breaks the loop. The module writes `pool` for a
+  # name and `server` for an address, which is what each of these wants.
   time.timeZone = "UTC";
   services.chrony = {
     enable = true;
-    servers = [
-      "0.pool.ntp.org"
-      "1.pool.ntp.org"
-      "2.pool.ntp.org"
-      "3.pool.ntp.org"
-    ];
+    servers = site.ntp.addresses ++ site.ntp.pools;
     # The RTC is handled by the module (rtcfile, rtcautotrim), so only the
     # stepping policy belongs here: laptop suspend produces jumps large enough
     # to break TLS, and they must be stepped rather than slewed.
+    #
+    # This repeats a directive the module already emits as `makestep 0.1 3`,
+    # and chrony takes the last one — which is the point. The limit has to be
+    # -1 rather than a count, and the module's option will not accept a
+    # negative number, so extraConfig is the only route to it. Unlimited
+    # matters here: a carrier that has already spent its three steps cannot
+    # correct the next suspend jump, and a clock nobody will step again is how
+    # the deadlock above becomes permanent.
     extraConfig = ''
       makestep 1.0 -1
     '';

@@ -9,6 +9,21 @@ PasswordAuthentication no
 KbdInteractiveAuthentication no
 UsePAM yes
 
+# Lets ~/.ssh/environment set variables for every session this user opens —
+# which is the only hook that reaches all four entry points at once, because
+# sshd applies it before exec and therefore before any shell. Everything the
+# `agent` verbs run is an ssh command session: tmux and whatever it spawns, and
+# agent-emacs-frame, whose daemon then hands the environment to every frame and
+# subprocess. See "Set environment variables" in the README.
+#
+# Not in tension with AuthorizedKeysFile above, despite touching the same
+# concern from the other side. That line keeps *authentication* out of
+# agent-writable space: who may get in is not the sandbox's decision. This one
+# governs the environment of a session already running as agent, inside the
+# sandbox, which the agent could set on anything it launches regardless. No
+# boundary moves.
+PermitUserEnvironment yes
+
 X11Forwarding no
 PrintMotd no
 AcceptEnv LANG LC_*

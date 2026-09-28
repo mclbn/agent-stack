@@ -1,0 +1,21 @@
+[Unit]
+Description=Seed the agent's home from the dotfiles mount, once
+# The mount is virtiofs and nofail, so it may be absent; the script handles
+# that rather than the unit failing. Runs after it so the files are there.
+After=etc-dotfiles.mount local-fs.target
+Wants=etc-dotfiles.mount
+Before=multi-user.target
+# Seeding happens at creation and never again: the marker is on the overlay, so
+# it survives `agent stop` and is destroyed by `agent reset`, which is what
+# makes reset the one way to take a fresh copy of dotfilesRoot. The script
+# writes it only after a successful pass, so a boot that found no mount tries
+# again rather than leaving a sandbox with no configuration and no way back.
+ConditionPathExists=!/var/lib/agent-dotfiles/seeded
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/dotfiles-seed
+
+[Install]
+WantedBy=multi-user.target

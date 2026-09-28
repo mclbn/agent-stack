@@ -1,7 +1,10 @@
 [Unit]
 Description=Window manager on :0
 ConditionPathExists=/usr/bin/i3
-After=xvnc.service
+# dotfiles-seed: EnvironmentFile below is read once, when this unit starts, so
+# on a sandbox's first boot the file has to exist by then. Ordering only —
+# seeding is not required, and a sandbox with no dotfiles still gets a WM.
+After=xvnc.service dotfiles-seed.service
 Requires=xvnc.service
 Before=multi-user.target
 
@@ -10,6 +13,15 @@ Type=simple
 User=agent
 Group=agent
 Environment=DISPLAY=:0
+# The same file sshd reads for every session, so a program launched from i3
+# gets the environment that `agent shell` and the Emacs daemon already get.
+# systemd's format and sshd's agree on bare KEY=value; they disagree on quotes,
+# which systemd strips and sshd keeps, so the file must not use them.
+#
+# Read at start, so an edit needs `systemctl restart wm` — and the Emacs daemon
+# caches its own copy, so it needs killing separately. The leading `-` keeps a
+# sandbox whose dotfiles carry no such file from failing to start a WM.
+EnvironmentFile=-/home/agent/.ssh/environment
 # A frame needs a window manager to be resizable, focusable and to keep
 # keyboard focus sane; without one Emacs comes up as an unmanaged window.
 ExecStartPre=/usr/bin/xsetroot -solid grey20

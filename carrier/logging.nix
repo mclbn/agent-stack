@@ -71,6 +71,12 @@
     logfile = "/data/logs/unbound.log";
     log-time-ascii = true;
     use-syslog = false;
+    # Off by default, which leaves a log that records every question and never
+    # a reason — so a resolver failing every public name looks exactly like
+    # one answering them. This adds the reason string and the address that
+    # produced it, and costs a line only when something has already gone
+    # wrong.
+    log-servfail = true;
   };
 
   # ProtectSystem=strict in the unbound unit means the log path has to be

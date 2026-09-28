@@ -333,7 +333,6 @@
 
         CRED_SOURCE=${site.credentials.source}
         AUTHINFO=${site.credentials.authinfoFile}
-        SYNC=yes
 
         # One line per credential: variable, machine name, command. The machine
         # name is what the synthesised netrc uses; the command is ignored when
@@ -365,31 +364,17 @@ ENTRIES
             echo "agent stop <project>          power off; overlay intact"
             echo "agent reset <project>         stop, then delete the overlay"
             echo "agent capture <project> start|stop"
-            echo "agent sync-config <project>   relink dotfiles now"
             echo "agent service list"
             echo "agent service start|stop|restart|status|logs <name>"
-            echo
-            echo "--no-sync   skip the dotfiles relink for this invocation"
           } >&2
           exit 1
         }
 
         host() { echo "$1.agents.${site.internalDomain}"; }
 
-        # The dotfiles themselves need no syncing: they are a directory on this
-        # machine, exported to L1 and re-exported into the sandbox, so an edit
-        # is visible there the moment it is saved.
-        #
-        # What does need a nudge is the *symlinks* into the agent's home, which
-        # are made once at boot. Re-running the unit picks up files added since,
-        # and is a no-op for the rest. Non-fatal: a sandbox must never fail to
-        # attach because of this.
-        relink_dotfiles() {
-          [ "$SYNC" = yes ] || return 0
-          ssh "$(host "$1")" 'sudo systemctl restart dotfiles-link.service' \
-            || echo "agent: dotfiles relink failed, continuing" >&2
-        }
-
+        # There is deliberately no dotfiles command here. A sandbox is seeded
+        # with dotfilesRoot when it is created and owns its copies from then
+        # on; pushing a later change into a running one is `agent reset`.
         ensure_running() {
           ssh l1 "agentctl start $1" >&2
         }
@@ -497,24 +482,11 @@ ENTRIES
         }
 
         # ---------------------------------------------------------------------
-        args=()
-        for a in "$@"; do
-          case "$a" in
-            --no-sync) SYNC=no ;;
-            *) args+=("$a") ;;
-          esac
-        done
-        set -- ''${args[@]+"''${args[@]}"}
         [ $# -ge 1 ] || usage
         verb=$1
         shift
 
         case "$verb" in
-          sync-config)
-            [ $# -eq 1 ] || usage
-            relink_dotfiles "$1"
-            ssh "$(host "$1")" 'ls -l ~/ | head -20'
-            ;;
           service)
             # Service stacks are systemd units on L1, started at boot. This is
             # for restarting one after changing its compose file, or looking at
@@ -541,7 +513,7 @@ ENTRIES
             # warm a sandbox before you need it, or to push credentials for
             # something that will connect by other means.
             [ $# -eq 1 ] || usage
-            ensure_running "$1"; relink_dotfiles "$1"; push_creds "$1"
+            ensure_running "$1"; push_creds "$1"
             echo "$1 is up at $(host "$1")"
             ;;
           stop|reset)
@@ -554,12 +526,12 @@ ENTRIES
             ;;
           shell)
             [ $# -eq 1 ] || usage
-            ensure_running "$1"; relink_dotfiles "$1"; push_creds "$1"
+            ensure_running "$1"; push_creds "$1"
             attach "$1" shell "'exec \$SHELL -l'"
             ;;
           claude-api)
             [ $# -eq 1 ] || usage
-            ensure_running "$1"; relink_dotfiles "$1"; push_creds "$1"
+            ensure_running "$1"; push_creds "$1"
             require_var "$1" ANTHROPIC_API_KEY
             # set -a exports everything the file defines, so one mechanism
             # serves every provider. A separate CLAUDE_CONFIG_DIR from Pro
@@ -570,7 +542,7 @@ ENTRIES
             ;;
           claude-pro)
             [ $# -eq 1 ] || usage
-            ensure_running "$1"; relink_dotfiles "$1"; push_creds "$1"
+            ensure_running "$1"; push_creds "$1"
             # Pro tokens land in the config directory on the overlay and
             # survive stop, but not reset: log in once per reset.
             attach "$1" claude-pro \
@@ -578,7 +550,7 @@ ENTRIES
             ;;
           codex)
             [ $# -eq 1 ] || usage
-            ensure_running "$1"; relink_dotfiles "$1"; push_creds "$1"
+            ensure_running "$1"; push_creds "$1"
             require_var "$1" OPENAI_API_KEY
             # CODEX_HOME on the overlay, alongside the other agents' config
             # directories, so it survives stop and is discarded by reset.
@@ -590,7 +562,7 @@ ENTRIES
             ;;
           opencode)
             [ $# -eq 1 ] || usage
-            ensure_running "$1"; relink_dotfiles "$1"; push_creds "$1"
+            ensure_running "$1"; push_creds "$1"
             # *Every* configured key, not one: opencode offers the models from
             # its own subscription through OPENCODE_API_KEY and direct
             # Anthropic access through ANTHROPIC_API_KEY, and lists both at
@@ -600,7 +572,7 @@ ENTRIES
             ;;
           vnc)
             [ $# -eq 1 ] || usage
-            ensure_running "$1"; relink_dotfiles "$1"; push_creds "$1"
+            ensure_running "$1"; push_creds "$1"
             require_display "$1"
             view "$1"
             ;;
@@ -609,7 +581,7 @@ ENTRIES
             # Credentials first, and before the daemon starts: auth-source
             # caches a miss, so a daemon that reads authinfo before it exists
             # keeps believing there is no key until it is restarted.
-            ensure_running "$1"; relink_dotfiles "$1"; push_creds "$1"
+            ensure_running "$1"; push_creds "$1"
             require_display "$1"
             # Idempotent: attaches to the frame that is already there, and
             # creates one only if there is none, so reconnecting after closing

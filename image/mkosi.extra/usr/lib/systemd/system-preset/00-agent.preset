@@ -9,7 +9,7 @@ enable sshd.service
 enable chronyd.service
 enable systemd-networkd.service
 enable agent-identity.service
-enable dotfiles-link.service
+enable dotfiles-seed.service
 enable pacman-init.service
 enable docker.service
 

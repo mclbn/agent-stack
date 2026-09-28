@@ -17,6 +17,9 @@
 let
   binPath = lib.makeBinPath [
     pkgs.coreutils
+    # cmp, for write_zone. Not in coreutils, and this script runs with an
+    # explicit PATH — a missing binary here fails silently as a false branch.
+    pkgs.diffutils
     pkgs.util-linux
     pkgs.iproute2
     pkgs.jq
@@ -153,8 +156,16 @@ let
         jq -r '"local-data: \"" + .project + ".agents.${site.internalDomain}. A " + .ip + "\""' "$ALLOC"
         jq -r '"local-data-ptr: \"" + .ip + " " + .project + ".agents.${site.internalDomain}.\""' "$ALLOC"
       } > "$zone.new"
-      mv "$zone.new" "$zone"
-      systemctl reload-or-restart unbound >/dev/null 2>&1 || true
+      # Only when it actually changed. allocate() runs on start, stop, reset
+      # and capture alike, and a reload discards the whole DNS cache — so
+      # unconditionally reloading meant every agent command threw away every
+      # cached answer and sent the next lookup back out to the internet.
+      if cmp -s "$zone.new" "$zone" 2>/dev/null; then
+        rm -f "$zone.new"
+      else
+        mv "$zone.new" "$zone"
+        systemctl reload-or-restart unbound >/dev/null 2>&1 || true
+      fi
     }
 
     # The generated per-project configuration. Written by root on L1, mounted
@@ -184,17 +195,18 @@ let
           ;; configuration has no business knowing it.
           (setq auth-sources '("/run/creds/authinfo"))
 
-          ;; Custom must write somewhere writable. Untouched, it writes into
-          ;; init.el — a symlink into the read-only dotfiles mount — and a
-          ;; custom.el tracked in the dotfiles is a symlink to the same place.
-          ;; Either way the first `M-x customize` write fails.
+          ;; Custom must not write into init.el. It is a real writable file on
+          ;; the overlay now — seeded from the dotfiles at creation — so a
+          ;; `M-x customize` write would succeed and quietly append generated
+          ;; forms to configuration you maintain on L0, where the change is
+          ;; invisible and `agent reset` silently discards it. Keeping custom's
+          ;; output in state is the point, not working around a read-only file.
           (setq custom-file "~/.local/state/emacs/custom.el")
 
-          ;; package-user-dir and the eln cache are deliberately *not* set.
-          ;; Individual files are symlinked into the home, not directories, so
-          ;; ~/.config/emacs/ is a real writable directory on the overlay and
-          ;; the defaults already work. startup-redirect-eln-cache would also
-          ;; have been a no-op: it only takes effect from early-init.el.
+          ;; package-user-dir and the eln cache are deliberately *not* set:
+          ;; ~/.config/emacs/ is an ordinary writable directory on the overlay,
+          ;; so the defaults already work. startup-redirect-eln-cache would
+          ;; also have been a no-op: it only takes effect from early-init.el.
         ''
       } "$dir/local.el"
 
