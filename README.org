@@ -190,6 +190,17 @@ ps -o user=,args= -C virtiofsd    # expect root
 ps -o user= -p "$(pgrep -f 'guest=agent-l1' | head -1)"
 #+END_SRC
 
+The domain also names its own virtiofsd binary: a two-line wrapper in the Nix
+store that runs the flake's pinned virtiofsd, the one the sandboxes get on L1,
+with ~--inode-file-handles=never~. Both hops need that flag: with file handles
+on L0, a deleted file on L0's disk is freed at once and its inode number
+reused, while L1's virtiofsd, which tells files apart by inode number, may
+still refer to it; a sandbox then sees ~Bad file descriptor~ or ~Stale file
+handle~ under churn such as git's. ~install~ and ~deploy~ keep the wrapper
+alive with one GC root, ~/nix/var/nix/gcroots/agent-stack-virtiofsd~, so
+~nix-collect-garbage~ on L0 is safe. The ~ps~ line above should show a
+~/nix/store/…-virtiofsd-…~ binary with the flag on both of L1's exports.
+
 ** Open questions on Ubuntu 24.04
 
 Six things that could not be settled without running it. Each is listed with
@@ -974,6 +985,7 @@ sudo rm -rf /var/lib/libvirt/images/agent
 # 4. L0-side leftovers
 nix profile remove agent
 sudo rm -rf /var/tmp/agent-stack-golden      # the golden build tree
+sudo rm -f /nix/var/nix/gcroots/agent-stack-virtiofsd   # L1's virtiofsd wrapper
 nix store gc                                 # store paths from past builds
 #+END_SRC
 
@@ -1323,12 +1335,13 @@ nix run '.#golden-build'
 | Command                         | Effect                                                         |
 |---------------------------------+----------------------------------------------------------------|
 | ~agent claude-api <project>~    | Claude Code with the API key from tmpfs, in its own config     |
-|                                 | directory                                                      |
+|                                 | directory; continues the last conversation in ~/work~          |
 | ~agent claude-pro <project>~    | Claude Code with Pro auth; tokens live on the overlay until    |
-|                                 | reset                                                          |
+|                                 | reset; continues the last conversation in ~/work~              |
 | ~agent codex <project>~         | Codex CLI with the API key from tmpfs, ~CODEX_HOME~ on the     |
-|                                 | overlay                                                        |
+|                                 | overlay; resumes the last session in ~/work~                   |
 | ~agent opencode <project>~      | opencode, keys through the environment rather than ~auth.json~ |
+|                                 | continues the last session                                     |
 | ~agent emacs <project>~         | ~emacsclient~ over VNC; needs the ~full~ profile               |
 | ~agent vnc <project>~           | just the viewer, on a frame already there; ~full~ only          |
 | ~agent shell <project>~         | a plain shell                                                  |
@@ -1341,6 +1354,20 @@ nix run '.#golden-build'
 Every attaching command does the same three things: ensure the sandbox exists
 and runs, push credentials, and attach inside tmux so a long run survives a
 dropped connection. Dotfiles are deliberately not among them — see below.
+
+*Both Claude verbs pick up where you left off.* A new tmux session starts
+~claude --continue~, which reopens the latest conversation in ~/work~; when
+there is none — the first run, or the first run after ~agent reset~ — it exits
+at once and a new conversation starts instead. The fallback only fires on a
+quick failure, so a continued session that ends in an error after real work
+closes the pane rather than opening a fresh one. ~/clear~ inside Claude starts
+a new conversation; ~/resume~ picks an older one. Reattaching to a session that
+is still running does neither: tmux just attaches.
+
+~codex~ does the same with ~codex resume --last~, which starts fresh on its own
+when there is nothing to reopen. ~opencode~ asks ~opencode session list~ first
+and passes ~--continue~ only when a session exists: with none, ~--continue~
+shows a server error before reaching the start screen.
 
 *Dotfiles.* ~dotfilesRoot~ is a directory on L0 — ~~/agent-dotfiles~ by
 default — exported to L1 by virtiofs and re-exported read-only into every

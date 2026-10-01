@@ -19,7 +19,14 @@
       # $out/carrier.qcow2
       image = carrier.config.system.build.image;
 
-      domainXml = pkgs.writeText "${site.domainName}.xml" (import ./host/domain-xml.nix { inherit site; });
+      # libvirt starts L1's virtiofsd itself and has no setting for
+      # --inode-file-handles, so the domain names this wrapper as its binary:
+      # the same pinned virtiofsd the sandboxes get on L1, with the same flag.
+      # Why both hops need it: see pin_virtiofsd_wrapper in the preamble.
+      virtiofsdWrapper = pkgs.writeShellScript "virtiofsd-no-file-handles" ''
+        exec ${pkgs.virtiofsd}/bin/virtiofsd --inode-file-handles=never "$@"
+      '';
+      domainXml = pkgs.writeText "${site.domainName}.xml" (import ./host/domain-xml.nix { inherit site virtiofsdWrapper; });
       networkXml = pkgs.writeText "${site.networkName}.xml" (import ./host/network-xml.nix { inherit site; });
 
       # Shared preamble for the host-side scripts. They deliberately use the
@@ -37,6 +44,7 @@
         IMAGE_STORE=${image}
         DOMAIN_XML=${domainXml}
         NETWORK_XML=${networkXml}
+        VIRTIOFSD_WRAPPER=${virtiofsdWrapper}
         SYSTEM_LINK="$IMAGE_DIR/l1-system-current.qcow2"
         DATA_DISK="$IMAGE_DIR/l1-data.raw"
 
@@ -69,6 +77,20 @@
             ! -name "l1-system-$stamp.qcow2" -print -delete | sed 's/^/    pruned /'
         }
 
+        # L0's virtiofsd must keep an fd on every inode L1 references, not a
+        # file handle, which current virtiofsd prefers by default. L1's
+        # virtiofsd tells inodes apart by inode number, which is only safe
+        # while each one is pinned: with handles here, ext4 frees a deleted
+        # inode at once and reuses its number, and L1 then hands a sandbox
+        # the wrong inode (EBADF, ESTALE). Hence the wrapper the domain names.
+        #
+        # The domain XML refers to that wrapper by store path, and nothing
+        # else keeps it alive: without a GC root, nix-collect-garbage on L0
+        # would delete the binary libvirt starts for L1. One root, replaced
+        # on every install and deploy.
+        pin_virtiofsd_wrapper() {
+          ln -sfn "$VIRTIOFSD_WRAPPER" /nix/var/nix/gcroots/agent-stack-virtiofsd
+        }
         domain_running() {
           virsh list --name --state-running 2>/dev/null | grep -qx "$DOMAIN"
         }
@@ -462,6 +484,15 @@ ENTRIES
           vncviewer -via "$(host "$1")" localhost:0
         }
 
+        # Continue the latest conversation in /work, else start a new one.
+        # claude --continue exits 1 at once when there is nothing to continue
+        # (a first run, or the first run after a reset). The elapsed-time test
+        # confines the fallback to that case: a continued session that ends
+        # with an error after real work closes the pane as before, instead of
+        # dropping into a fresh conversation. No single quotes in here: it is
+        # spliced into a single-quoted remote command.
+        continue_or_new='t=$(date +%s); claude --continue || { [ $(( $(date +%s) - t )) -lt 10 ] && exec claude; }'
+
         # tmux in the sandbox, so a long agent run survives a dropped
         # connection and can be reattached.
         attach() {
@@ -538,7 +569,8 @@ ENTRIES
             # mode, so the two cannot collide.
             attach "$1" claude-api \
               "'set -a; . /run/creds/env; set +a; \
-                CLAUDE_CONFIG_DIR=\$HOME/.config/claude-api claude'"
+                export CLAUDE_CONFIG_DIR=\$HOME/.config/claude-api; \
+                $continue_or_new'"
             ;;
           claude-pro)
             [ $# -eq 1 ] || usage
@@ -546,7 +578,8 @@ ENTRIES
             # Pro tokens land in the config directory on the overlay and
             # survive stop, but not reset: log in once per reset.
             attach "$1" claude-pro \
-              "'CLAUDE_CONFIG_DIR=\$HOME/.config/claude-pro claude'"
+              "'export CLAUDE_CONFIG_DIR=\$HOME/.config/claude-pro; \
+                $continue_or_new'"
             ;;
           codex)
             [ $# -eq 1 ] || usage
@@ -555,10 +588,13 @@ ENTRIES
             # CODEX_HOME on the overlay, alongside the other agents' config
             # directories, so it survives stop and is discarded by reset.
             # Codex requires the directory to exist before it will start.
+            # resume --last reopens the latest session started in /work, and
+            # starts a new one by itself when there is none, so it needs no
+            # fallback of its own.
             attach "$1" codex \
               "'set -a; . /run/creds/env; set +a; \
                 export CODEX_HOME=\$HOME/.config/codex; \
-                mkdir -p \$CODEX_HOME; codex'"
+                mkdir -p \$CODEX_HOME; codex resume --last'"
             ;;
           opencode)
             [ $# -eq 1 ] || usage
@@ -568,7 +604,14 @@ ENTRIES
             # Anthropic access through ANTHROPIC_API_KEY, and lists both at
             # once. Through the environment rather than `opencode auth login`,
             # which writes to auth.json on the overlay where it survives stop.
-            attach "$1" opencode "'set -a; . /run/creds/env; set +a; opencode'"
+            # --continue only when there is a session to continue: with none,
+            # opencode still starts, but shows a server error before falling
+            # back to its start screen. `session list` prints nothing when the
+            # project has no session; if it fails, the plain start is taken.
+            attach "$1" opencode \
+              "'set -a; . /run/creds/env; set +a; \
+                if [ -n \"\$(opencode session list -n 1 2>/dev/null)\" ]; \
+                then exec opencode --continue; else exec opencode; fi'"
             ;;
           vnc)
             [ $# -eq 1 ] || usage
@@ -662,6 +705,7 @@ ENTRIES
           virsh net-start "$NETWORK"
         fi
 
+        pin_virtiofsd_wrapper
         echo "==> defining domain $DOMAIN"
         virsh define "$DOMAIN_XML" >/dev/null
         if domain_running; then
@@ -681,6 +725,7 @@ ENTRIES
 
         stop_domain
         install_image
+        pin_virtiofsd_wrapper
         echo "==> redefining domain $DOMAIN"
         virsh define "$DOMAIN_XML" >/dev/null
         virsh start "$DOMAIN" >/dev/null

@@ -13,7 +13,7 @@
 
   # Public half of the stack's ssh keypair. Generated on L0, never leaves it.
   #   ssh-keygen -t ed25519 -f ~/.ssh/agent-stack -C agent-stack
-  operatorSshKey = "ssh...CHANGEME";
+  operatorSshKey = "ssh-CHANGEME...";
 
   # Where L1's disks live on L0. Root-owned, mode 0700.
   imageDir = "/var/lib/libvirt/images/agent";
@@ -141,13 +141,13 @@
     # can still build, run and debug code, use databases and run containers.
     # Worth having while iterating on the stack itself: it builds in minutes
     # and copies to L1 in seconds. See image/mkosi.profiles/.
-    profile = "light";
+    profile = "full";
 
     # The Arch Linux Archive date every repository is pinned to, so that two
     # rebuilds months apart are not silently different. Bumped deliberately by
     # `nix run '.#golden-update'`, which resolves the newest available date,
     # writes it here, resets every project and rebuilds.
-    snapshot = "2026/09/01";
+    snapshot = "2026/09/27";
 
     # The VNC display, in the full profile only. No password: the only route
     # in is the ssh tunnel, already authenticated by key, and Xvnc listens on
@@ -195,7 +195,7 @@
   # backing, which makes ballooning and free-page reporting unreliable.
   sandbox = {
     memoryMiB = 4096;
-    vcpu = 2;
+    vcpu = 4;
   };
 
   # ------------------------------------------------------ internal names --

@@ -1,7 +1,7 @@
 # The libvirt domain for L1, generated from the flake so it stays text and
 # versioned. The system disk is referenced through a symlink, so an image swap
 # needs no XML edit.
-{ site }:
+{ site, virtiofsdWrapper }:
 
 ''
   <domain type='kvm'>
@@ -77,9 +77,12 @@
 
       <!-- The export root. virtiofsd runs as root under libvirt, confined by
            its own namespace sandbox and seccomp filter, which is what makes
-           uid 1000 end to end literally true. -->
+           uid 1000 end to end literally true. The binary is virtiofsd set
+           to never use inode file handles; see pin_virtiofsd_wrapper in
+           flake.nix for why nesting needs it. -->
       <filesystem type='mount' accessmode='passthrough'>
         <driver type='virtiofs'/>
+        <binary path='${virtiofsdWrapper}'/>
         <source dir='${site.exportRoot}'/>
         <target dir='projects'/>
       </filesystem>
@@ -89,6 +92,7 @@
            different scopes: this one is shared by every project. -->
       <filesystem type='mount' accessmode='passthrough'>
         <driver type='virtiofs'/>
+        <binary path='${virtiofsdWrapper}'/>
         <source dir='${site.dotfilesRoot}'/>
         <target dir='dotfiles'/>
       </filesystem>

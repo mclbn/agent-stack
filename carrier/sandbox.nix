@@ -264,6 +264,7 @@ let
           ${pkgs.virtiofsd}/bin/virtiofsd \
             --socket-path="$run/$tag.sock" \
             --shared-dir="$dir" \
+            --inode-file-handles=never \
             --sandbox=namespace >/dev/null
         # QEMU runs as the project uid and virtiofsd as root, so the socket has
         # to be handed over once it exists. Waiting beats an ExecStartPost that
