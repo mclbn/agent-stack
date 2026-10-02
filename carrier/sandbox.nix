@@ -107,6 +107,7 @@ let
         echo "agentctl reset <project>   stop, then delete the overlay"
         echo "agentctl delete <project>  reset, then drop its config, captures and address"
         echo "agentctl status            what exists and what is running"
+        echo "agentctl prune             delete the goldens no overlay is pinned to"
         echo "agentctl capture <p> start|stop   pcap on the project's tap"
       } >&2
       exit 1
@@ -442,6 +443,32 @@ let
     }
 
     # The project name stays the first column: golden-update reads it.
+    # An old golden is deleted only once no overlay is pinned to it: deleting
+    # it would strand those projects, running ones included, since QEMU holds
+    # the file open. Run by golden-build after it repoints current, and by
+    # golden-update after its reset.
+    cmd_prune() {
+      current=$(readlink -f /data/images/current || true)
+      [ -n "$current" ] && [ -e "$current" ] || die "no current golden; nothing to keep"
+      declare -A users=()
+      for o in /data/overlays/*.qcow2; do
+        [ -e "$o" ] || continue
+        # -U: a running QEMU holds the lock on its overlay. A failure here
+        # aborts the prune: an unreadable overlay must not free its golden.
+        b=$(qemu-img info -U --output=json "$o" | jq -r '."backing-filename" // empty')
+        [ -n "$b" ] && users[$b]+=" $(basename "$o" .qcow2)"
+      done
+      for g in /data/images/golden/arch-*.qcow2; do
+        [ -e "$g" ] && [ "$g" != "$current" ] || continue
+        if [ -n "''${users[$g]:-}" ]; then
+          echo "kept $(basename "$g") (''${users[$g]# })"
+        else
+          rm -f "$g"
+          echo "pruned $(basename "$g")"
+        fi
+      done
+    }
+
     cmd_status() {
       # A missing workspace is only reported when the export is mounted. The
       # mount is nofail, and without it every project would look abandoned.
@@ -487,6 +514,7 @@ let
       reset) [ $# -eq 1 ] || usage; cmd_reset "$1" ;;
       delete) [ $# -eq 1 ] || usage; cmd_delete "$1" ;;
       status) cmd_status ;;
+      prune) [ $# -eq 0 ] || usage; cmd_prune ;;
       *) usage ;;
     esac
   '';

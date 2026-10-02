@@ -734,9 +734,9 @@ nix run '.#golden-update'
 git add -A && git commit site.nix -m 'golden: bump snapshot'
 #+END_SRC
 
-The reset moves every project onto the new golden: ~golden-build~ keeps an old
-golden for as long as an overlay is pinned to it, so the reset is also what
-lets the old one be pruned. Commit the new date — it is the record of what the golden contains.
+The projects are reset only once the build has succeeded, so a failed build
+costs no overlay; the old golden, kept while they were pinned to it, is then
+pruned. Commit the new date — it is the record of what the golden contains.
 
 *** Add an AUR package
 
@@ -1179,9 +1179,10 @@ It builds under ~/var/tmp/agent-stack-golden~ with sudo, converts to qcow2,
 copies the result into ~/data/images/golden/~ on L1 as you rather than as root
 (the stack's private key never leaves your account), repoints ~current~ only
 after the copy lands, and prunes every older golden that no overlay is pinned
-to. One that is still in use is kept and named with the projects holding it,
-running or not; ~agent list~ shows it in the IMAGE column as ~(old)~, and
-resetting or deleting those projects lets the next build prune it. Goldens are
+to (~agentctl prune~). One that is still in use is kept and named with the
+projects holding it, running or not; ~agent list~ shows it in the IMAGE column
+as ~(old)~, and once those projects are reset or deleted, ~ssh l1 agentctl
+prune~ frees it. Goldens are
 named to the second, so a rebuild the same day never takes the name of one an
 overlay is pinned to. The package
 cache is kept so that a rebuild is cheap; the workspace and the raw image are
@@ -1294,10 +1295,11 @@ now reproduces what was built today. Updating is one command:
 nix run '.#golden-update'
 #+END_SRC
 
-It resolves the newest available snapshot, records it in ~site.nix~, resets
-every project, rebuilds, and prints how to start them again. The reset is what
-moves the projects onto the new golden; the old one is pruned once no overlay
-is pinned to it.
+It resolves the newest available snapshot, records it in ~site.nix~, rebuilds,
+resets every project onto the new golden, prunes the old one, and prints how to
+start them again. The reset comes *after* the build on purpose: if the build
+fails, nothing has been reset and the projects keep their overlays on the old
+golden.
 
 Two things the pin does *not* cover, worth knowing before assuming a rebuild is
 reproducible: the AUR packages are built from whatever the AUR has that day,
@@ -1361,6 +1363,7 @@ survives it:
 ssh l1 agentctl stop demo
 ssh l1 agentctl reset demo        # stop, then delete the overlay
 ssh l1 agentctl delete demo       # reset, then drop config, captures, address
+ssh l1 agentctl prune             # delete the goldens no overlay is pinned to
 #+END_SRC
 
 * The agent wrapper

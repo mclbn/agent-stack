@@ -270,33 +270,16 @@
 
         # The symlink is repointed only after the copy lands. Overlays record
         # the resolved dated path, never this symlink, so repointing it can
-        # never rebase an existing overlay. An old golden is pruned only once
-        # no overlay is pinned to it: deleting it would strand those projects,
-        # running ones included, since QEMU holds the file open. Overlays are
-        # read after the repoint, so one created meanwhile is on the new golden.
-        ssh root@l1 bash -s -- "$stamp" <<'EOF'
-          set -euo pipefail
-          new=/data/images/golden/arch-$1.qcow2
-          ln -sfn "$new" /data/images/current
-          declare -A users=()
-          for o in /data/overlays/*.qcow2; do
-            [ -e "$o" ] || continue
-            # -U: a running QEMU holds the lock on its overlay.
-            b=$(qemu-img info -U --output=json "$o" | jq -r '."backing-filename" // empty')
-            [ -n "$b" ] && users[$b]+=" $(basename "$o" .qcow2)"
-          done
-          for g in /data/images/golden/arch-*.qcow2; do
-            [ -e "$g" ] && [ "$g" != "$new" ] || continue
-            if [ -n "''${users[$g]:-}" ]; then
-              echo "    kept $(basename "$g") (''${users[$g]# })"
-            else
-              rm -f "$g"
-              echo "    pruned $(basename "$g")"
-            fi
-          done
-          echo "    current -> $(readlink /data/images/current)"
+        # never rebase an existing overlay. The prune runs after the repoint,
+        # so an overlay created meanwhile is on the new golden; it keeps any
+        # old golden an overlay is still pinned to.
+        ssh root@l1 "
+          set -eo pipefail
+          ln -sfn /data/images/golden/arch-$stamp.qcow2 /data/images/current
+          agentctl prune | sed 's/^/    /'
+          echo '    current -> '\$(readlink /data/images/current)
           df -h /data | tail -1 | sed 's/^/    /'
-        EOF
+        "
 
         sudo rm -f "$local_qcow"
         # The workspace is scratch, but the staged config is kept: it is what
@@ -310,10 +293,11 @@
         export LC_ALL=C LANG=C
 
         # Routine maintenance in one command: find the newest archive
-        # snapshot, record it, reset every project, rebuild, and say how to
-        # start them again. Resetting moves every project onto the new golden
-        # and leaves the old one pinned by nothing, so golden-build prunes it;
-        # a project left unreset would keep the old golden, and its space.
+        # snapshot, record it, rebuild, reset every project onto the new
+        # golden, prune the old one, and say how to start them again. The reset
+        # comes *after* the build: a failed build then costs no overlay. The
+        # build's own prune has kept the old golden, which the projects were
+        # still pinned to, hence the second prune.
         [ "$(id -u)" -ne 0 ] || { echo "run as your normal user" >&2; exit 1; }
         repo=$(${pkgs.git}/bin/git rev-parse --show-toplevel)
         cd "$repo"
@@ -333,15 +317,18 @@
         ${pkgs.git}/bin/git -C "$repo" add -A
         ${pkgs.git}/bin/git -C "$repo" --no-pager diff --cached -- site.nix | tail -4
 
-        echo "==> resetting projects, so none is left pinned to the old golden"
+        echo "==> rebuilding against $latest"
+        nix run "$repo#golden-build"
+
+        echo "==> resetting projects onto the new golden"
         projects=$(ssh l1 agentctl status | tail -n +2 | ${pkgs.gawk}/bin/awk '{print $1}')
         for p in $projects; do
           echo "    $p"
           ssh l1 "agentctl reset $p"
         done
 
-        echo "==> rebuilding against $latest"
-        nix run "$repo#golden-build"
+        echo "==> pruning the old golden"
+        ssh l1 agentctl prune | sed 's/^/    /'
 
         echo
         echo "Done. Start them again with:"
