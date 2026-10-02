@@ -391,9 +391,10 @@ ENTRIES
             echo "agent start <project>         bring it up, do not attach"
             echo "agent stop <project>          power off; overlay intact"
             echo "agent reset <project>         stop, then delete the overlay"
-            echo "agent delete <project>        reset, then free its config and address"
-            echo "agent list                    every project: address, state, overlay"
-            echo "agent capture <project> start|stop"
+            echo "agent delete <project>        reset, then free its config, captures and address"
+            echo "agent list                    every project: address, state, overlay, image"
+            echo "agent capture <project> start|stop|delete"
+            echo "agent capture list            every capture, and whether it runs"
             echo "agent service list"
             echo "agent service start|stop|restart|status|logs <name>"
           } >&2
@@ -564,8 +565,11 @@ ENTRIES
             ssh l1 agentctl status
             ;;
           capture)
-            [ $# -eq 2 ] || usage
-            ssh l1 "agentctl capture $1 $2"
+            case $# in
+              1) [ "$1" = list ] || usage; ssh l1 agentctl capture list ;;
+              2) ssh l1 "agentctl capture $1 $2" ;;
+              *) usage ;;
+            esac
             ;;
           shell)
             [ $# -eq 1 ] || usage

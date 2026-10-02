@@ -93,6 +93,11 @@ let
     # still counts their indices, so an address is never handed out twice.
     DELETED=/data/state/alloc-deleted.jsonl
     LOCK=/data/state/alloc.lock
+    PCAP=/data/logs/pcap
+    # The stamp agent-capture names a session by, spelled out so that a
+    # project's captures are matched exactly: $project-* would also take the
+    # captures of foo-bar for foo. Left unquoted where used, to glob.
+    STAMP_GLOB='[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]'
     EXPORT_ROOT=/srv/projects
     GATEWAY=${site.agents.gateway}
 
@@ -109,6 +114,8 @@ let
         echo "agentctl status            what exists and what is running"
         echo "agentctl prune             delete the goldens no overlay is pinned to"
         echo "agentctl capture <p> start|stop   pcap on the project's tap"
+        echo "agentctl capture <p> delete       delete the project's captures"
+        echo "agentctl capture list             every capture, and whether it runs"
       } >&2
       exit 1
     }
@@ -413,9 +420,7 @@ let
         && die "$project is still running"
       rm -f "/data/overlays/$project.qcow2"
       rm -rf "/data/config/$project" "/run/agent/$project"
-      # The stamp spelled out rather than $project-*, which would also take
-      # the captures of foo-bar when deleting foo.
-      rm -f "/data/logs/pcap/$project"-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].pcap*
+      rm -f "$PCAP/$project"-$STAMP_GLOB.pcap*
       # A failed instance outlives its project and keeps the carrier degraded
       # in `systemctl is-system-running`. The agent-fs units are --collect and
       # clean up after themselves.
@@ -428,18 +433,57 @@ let
       echo "$project deleted; address $ip will not be reused, workspace left in place"
     }
 
-        cmd_capture() {
+    cmd_capture() {
       project=$1
       action=$2
       valid_name "$project" || die "invalid project name: $project"
       lookup "$project"
       case "$action" in
         start) systemctl start "agent-capture@$project"
-               echo "capturing $tap to /data/logs/pcap/$project-*.pcap" ;;
+               echo "capturing $tap to $PCAP/$project-*.pcap*" ;;
         stop) systemctl stop "agent-capture@$project"
               echo "capture stopped" ;;
-        *) die "capture takes start or stop" ;;
+        # Refused while running rather than stopped: tcpdump holds its file
+        # open, so deleting it would free nothing, and the ring would go on.
+        delete) systemctl is-active --quiet "agent-capture@$project" \
+                  && die "a capture of $project is running; stop it first"
+                n=0
+                for f in "$PCAP/$project"-$STAMP_GLOB.pcap*; do
+                  [ -e "$f" ] || continue
+                  rm -f "$f"
+                  n=$((n + 1))
+                done
+                echo "$n capture files of $project deleted" ;;
+        *) die "capture takes start, stop or delete" ;;
       esac
+    }
+
+    # One row per session: a project's files sharing one start stamp. Only the
+    # newest session of a project can be the running one, since each start
+    # names a new ring. Captures of a project with no record are left from
+    # before delete removed them; they go by hand.
+    cmd_capture_list() {
+      printf '%-20s %-16s %-6s %-8s %s\n' PROJECT STARTED FILES SIZE STATE
+      for f in "$PCAP"/*-$STAMP_GLOB.pcap*; do
+        [ -e "$f" ] || continue
+        s=$(basename "$f"); s=''${s%%.pcap*}
+        p=''${s%-*-*}
+        echo "$p ''${s#"$p"-} $(stat -c %s "$f")"
+      done | awk '{ k = $1 " " $2; n[k]++; b[k] += $3
+                    if ($2 > last[$1]) last[$1] = $2 }
+                  END { for (k in n) { split(k, a, " ")
+                          print k, n[k], b[k], (a[2] == last[a[1]]) } }' |
+      sort | while read -r p stamp files bytes newest; do
+        if ! jq -e --arg p "$p" 'select(.project==$p)' "$ALLOC" >/dev/null 2>&1; then
+          state="(no project)"
+        elif [ "$newest" = 1 ] && systemctl is-active --quiet "agent-capture@$p"; then
+          state=running
+        else
+          state=
+        fi
+        printf '%-20s %-16s %-6s %-8s %s\n' \
+          "$p" "$stamp" "$files" "$(numfmt --to=iec "$bytes")" "$state"
+      done
     }
 
     # An old golden is deleted only once no overlay is pinned to it: deleting
@@ -509,7 +553,13 @@ let
     shift
     case "$verb" in
       start) [ $# -eq 1 ] || usage; cmd_start "$1" ;;
-      capture) [ $# -eq 2 ] || usage; cmd_capture "$1" "$2" ;;
+      # `capture list` has one argument and `capture <p> <action>` two, so a
+      # project named list stays reachable.
+      capture) case $# in
+                 1) [ "$1" = list ] || usage; cmd_capture_list ;;
+                 2) cmd_capture "$1" "$2" ;;
+                 *) usage ;;
+               esac ;;
       stop) [ $# -eq 1 ] || usage; cmd_stop "$1" ;;
       reset) [ $# -eq 1 ] || usage; cmd_reset "$1" ;;
       delete) [ $# -eq 1 ] || usage; cmd_delete "$1" ;;
