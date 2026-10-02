@@ -1228,7 +1228,11 @@ Console locale, keymap and timezone come from ~site.nix~ (~guest.locale~,
 ~guest.keymap~, ~guest.timezone~) and default to ~en_US.UTF-8~, ~us~ and
 ~UTC~. A locale other than those already in
 ~image/mkosi.skeleton/etc/locale.gen~ has to be added there too, since it must
-be generated before it can be selected.
+be generated before it can be selected. The timezone is the exception among
+the three: it is not handed to mkosi, whose ~systemd-firstboot~ comes from
+nixpkgs and looks for zones in NixOS's ~/etc/zoneinfo~. ~mkosi.postinst~ links
+~/etc/localtime~ into the image's own ~/usr/share/zoneinfo~ instead, and fails
+the build on a name that is not there.
 
 The Arch Linux Archive pin lives in ~site.nix~ as ~guest.snapshot~ and is
 passed to mkosi on the command line by ~golden-build~, so every "what goes in

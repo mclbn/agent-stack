@@ -126,10 +126,12 @@
   };
 
   # --------------------------------- sandbox console (baked into the golden)
-  # Passed to mkosi by golden-build, overriding the defaults in
-  # image/mkosi.conf. Changing the locale to something other than en_US.UTF-8
-  # or C.UTF-8 also means editing image/mkosi.extra/etc/locale.gen, since a
-  # glibc locale has to be generated before it can be selected.
+  # Locale and keymap are passed to mkosi by golden-build, overriding the
+  # defaults in image/mkosi.conf; the timezone is linked by mkosi.postinst,
+  # which fails the build on a name the image's tzdata does not have. Changing
+  # the locale to something other than en_US.UTF-8 or C.UTF-8 also means
+  # editing image/mkosi.skeleton/etc/locale.gen, since a glibc locale has to be
+  # generated before it can be selected.
   guest = {
     locale = "en_US.UTF-8";
     keymap = "us";

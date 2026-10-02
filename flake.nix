@@ -245,10 +245,10 @@
           --profile ${site.guest.profile} \
           --environment VNC_GEOMETRY=${site.guest.vnc.geometry} \
           --environment VNC_DEPTH=${toString site.guest.vnc.depth} \
+          --environment GUEST_TIMEZONE=${site.guest.timezone} \
           --snapshot ${site.guest.snapshot} \
           --locale ${site.guest.locale} \
           --keymap ${site.guest.keymap} \
-          --timezone ${site.guest.timezone} \
           --force \
           build
 

@@ -24,6 +24,19 @@ if [ -r "$BUILDROOT/etc/locale.conf" ]; then
     echo "    /etc/environment: $(grep '^LANG=' "$BUILDROOT/etc/environment")"
 fi
 
+# --- timezone -----------------------------------------------------------------
+# Here rather than through mkosi's Timezone=, which goes to nixpkgs'
+# systemd-firstboot: see the note in mkosi.conf. The link is the one Arch's own
+# timedatectl writes, and the name is checked against the image's zoneinfo,
+# which is the one that will read it. tzdata comes in as a dependency of glibc.
+tz=${GUEST_TIMEZONE:-UTC}
+if [ ! -f "$BUILDROOT/usr/share/zoneinfo/$tz" ]; then
+    echo "timezone $tz: no /usr/share/zoneinfo/$tz in the image (guest.timezone in site.nix)" >&2
+    exit 1
+fi
+ln -sfn "../usr/share/zoneinfo/$tz" "$BUILDROOT/etc/localtime"
+echo "    /etc/localtime -> ../usr/share/zoneinfo/$tz"
+
 # --- display geometry ---------------------------------------------------------
 # The Xvnc unit is a static file and cannot read site.nix, so golden-build
 # passes the values through mkosi's environment and they are substituted here.
