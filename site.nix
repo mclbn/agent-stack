@@ -133,7 +133,7 @@
   guest = {
     locale = "en_US.UTF-8";
     keymap = "us";
-    timezone = "Europe/Paris";
+    timezone = "UTC";
 
     # "full" or "light". full is the image the specification describes, around
     # 20-25 GB. light omits the editor, the display stack and the document
@@ -141,7 +141,7 @@
     # can still build, run and debug code, use databases and run containers.
     # Worth having while iterating on the stack itself: it builds in minutes
     # and copies to L1 in seconds. See image/mkosi.profiles/.
-    profile = "full";
+    profile = "light";
 
     # The Arch Linux Archive date every repository is pinned to, so that two
     # rebuilds months apart are not silently different. Bumped deliberately by
