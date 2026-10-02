@@ -912,13 +912,23 @@ ring — see [[*Logs][Logs]].
 agent capture demo start
 # reproduce whatever you are chasing
 agent capture demo stop
-ssh l1 'ls -lh /data/logs/pcap/'
-scp l1:/data/logs/pcap/demo-*.pcap .   # then open it in wireshark on L0
+agent capture list                     # one row per capture: start, files, size
+scp 'l1:/data/logs/pcap/demo-*.pcap*' .   # then open them in wireshark on L0
+agent capture demo delete              # every capture of demo
 #+END_SRC
 
 The capture is a systemd unit rather than a command left running, so it
 survives a dropped ssh connection and stops only when told to. The ring is
-size-capped because an unbounded capture on a busy tap fills the data disk.
+size-capped because an unbounded capture on a busy tap fills the data disk:
+five files of 100 MB, ~demo-<start>.pcap0~ to ~.pcap4~, each gzipped once the
+ring moves past it. Each ~start~ begins a new ring, so it is the number of
+captures kept, not their length, that adds up.
+
+~delete~ refuses while a capture runs: tcpdump holds its file open, so
+deleting it would free nothing. ~capture list~ marks the running one, and
+~(no project)~ on captures left by a project deleted before ~delete~ removed
+them; those go by hand, with ~ssh l1 rm /data/logs/pcap/<name>-*.pcap*~ for a
+name no other project extends.
 
 *Untested.* The unit and the wrapper verb exist; a capture has not been taken
 and opened end to end.
@@ -1402,7 +1412,9 @@ nix run '.#golden-build'
 |                                 | workspace on L0 is left alone                                  |
 | ~agent list~                    | every project: address, state, overlay size, golden, missing   |
 |                                 | workspace                                                      |
-| ~agent capture <project> start~ | pcap on that project's tap; ~stop~ ends it                     |
+| ~agent capture <project> start~ | pcap on that project's tap; ~stop~ ends it, ~delete~ removes   |
+|                                 | the project's captures                                         |
+| ~agent capture list~            | every capture: project, start, files, size, running            |
 | ~agent service <verb> [name]~   | the L1 service stacks: ~list~, ~status~, ~logs~, ~restart~     |
 
 Every attaching command does the same three things: ensure the sandbox exists
@@ -1688,8 +1700,8 @@ ssh l1 'ls -lh /data/logs/ /data/logs/squid/'
 | ~/data/logs/unbound.log~      | who resolved what, port 53 only                                  |
 | ~/data/logs/flow.log~         | permitted non-80/443 connections, and refused cross-segment ones |
 | ~/data/logs/journal/~         | unit events, QEMU, agentctl, bounded by systemd's own limits     |
-| ~/data/logs/pcap/~            | manual captures from ~agent capture~, size-capped rings; not          |
-|                               | rotated, so they stay until removed by hand or by ~agent delete~      |
+| ~/data/logs/pcap/~            | captures from ~agent capture~, size-capped rings, not rotated:   |
+|                               | kept until ~agent capture <p> delete~ or ~agent delete~          |
 
 The flow log is pulled out of the kernel journal into its own file, because an
 inventory is only useful if reading it does not mean wading through messages
