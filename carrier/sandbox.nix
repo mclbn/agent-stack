@@ -442,7 +442,6 @@ let
       esac
     }
 
-    # The project name stays the first column: golden-update reads it.
     # An old golden is deleted only once no overlay is pinned to it: deleting
     # it would strand those projects, running ones included, since QEMU holds
     # the file open. Run by golden-build after it repoints current, and by
@@ -469,6 +468,7 @@ let
       done
     }
 
+    # The project name stays the first column: golden-update reads it.
     cmd_status() {
       # A missing workspace is only reported when the export is mounted. The
       # mount is nofail, and without it every project would look abandoned.
