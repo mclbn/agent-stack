@@ -514,6 +514,7 @@ agent start demo                       # up, credentials pushed, no attach
 agent stop demo                        # power off, overlay intact
 agent reset demo                       # stop, then delete the overlay
 agent delete demo                      # reset, then free its config and address
+agent prune                            # free goldens that no overlay uses any more
 #+END_SRC
 
 Only starting creates a project. ~stop~, ~reset~, ~delete~ and ~capture~ on a
@@ -1191,8 +1192,8 @@ copies the result into ~/data/images/golden/~ on L1 as you rather than as root
 after the copy lands, and prunes every older golden that no overlay is pinned
 to (~agentctl prune~). One that is still in use is kept and named with the
 projects holding it, running or not; ~agent list~ shows it in the IMAGE column
-as ~(old)~, and once those projects are reset or deleted, ~ssh l1 agentctl
-prune~ frees it. Goldens are
+as ~(old)~, and once those projects are reset or deleted, ~agent prune~
+frees it. Goldens are
 named to the second, so a rebuild the same day never takes the name of one an
 overlay is pinned to. The package
 cache is kept so that a rebuild is cheap; the workspace and the raw image are
@@ -1416,6 +1417,7 @@ nix run '.#golden-build'
 |                                 | workspace on L0 is left alone                                  |
 | ~agent list~                    | every project: address, state, overlay size, golden, missing   |
 |                                 | workspace                                                      |
+| ~agent prune~                   | delete the goldens no overlay is pinned to; never ~current~    |
 | ~agent capture <project> start~ | pcap on that project's tap; ~stop~ ends it, ~delete~ removes   |
 |                                 | the project's captures                                         |
 | ~agent capture list~            | every capture: project, start, files, size, running            |

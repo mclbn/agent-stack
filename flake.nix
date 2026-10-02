@@ -393,6 +393,7 @@ ENTRIES
             echo "agent reset <project>         stop, then delete the overlay"
             echo "agent delete <project>        reset, then free its config, captures and address"
             echo "agent list                    every project: address, state, overlay, image"
+            echo "agent prune                   delete the goldens no overlay is pinned to"
             echo "agent capture <project> start|stop|delete"
             echo "agent capture list            every capture, and whether it runs"
             echo "agent service list"
@@ -563,6 +564,12 @@ ENTRIES
           list)
             [ $# -eq 0 ] || usage
             ssh l1 agentctl status
+            ;;
+          # The prune golden-build already runs, for the goldens it had to keep:
+          # once the projects pinned to one are reset or deleted, this frees it.
+          prune)
+            [ $# -eq 0 ] || usage
+            ssh l1 agentctl prune
             ;;
           capture)
             case $# in
