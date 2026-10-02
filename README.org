@@ -495,20 +495,30 @@ ssh l1 'btrfs filesystem usage -h /data | head -4'
 ~degraded~ is the one worth reading closely: the carrier is up and a unit has
 failed, which ~systemctl --failed~ names. ~agentctl status~ reports ~running~,
 ~stopped~ or ~reset~ per project, so a project you expected to be up and which
-reads ~reset~ has lost its overlay rather than its power.
+reads ~reset~ has lost its overlay rather than its power. Its last column reads
+~missing~ when the project's workspace is gone from L0, which makes it a
+candidate for ~agent delete~, and ~?~ when the export is not mounted on L1 and
+there is no way to tell.
 
 *Untested.* Assembled from checks that are individually proven; the sequence
 has not been run as one block.
 
-*** Start, stop or reset a sandbox
+*** Start, stop, reset or delete a sandbox
 
-~stop~ keeps the overlay, ~reset~ discards it — see [[*Sandboxes][Sandboxes]].
+~stop~ keeps the overlay, ~reset~ discards it, ~delete~ discards the project —
+see [[*Sandboxes][Sandboxes]] and [[*Delete a project][Delete a project]].
 
 #+BEGIN_SRC sh
+agent list                             # every project, its address and state
 agent start demo                       # up, credentials pushed, no attach
 agent stop demo                        # power off, overlay intact
 agent reset demo                       # stop, then delete the overlay
+agent delete demo                      # reset, then free its config and address
 #+END_SRC
+
+Only starting creates a project. ~stop~, ~reset~, ~delete~ and ~capture~ on a
+name that was never started, or has been deleted, fail with ~no project~ rather
+than allocating an address for a typo.
 
 *** Attach an agent
 
@@ -933,20 +943,21 @@ nix store gc                           # store paths from past builds
 #+END_SRC
 
 If ~/data~ fills, the overlays are the place to look first: each grows with
-what its agent installs, and ~agent reset~ returns one to nothing.
+what its agent installs, and ~agent reset~ returns one to nothing — or
+~agent delete~ removes it with the rest of a project you are done with.
 ~clean --all~ drops the package cache too, which costs a ~20 GB redownload on
 the next build — for when the disk is actually short, not routine.
 
 *** Add a second project
 
 A directory on L0 and one command. Nothing is registered anywhere first:
-~agentctl~ allocates on first use, from the monotonic index in
+~agentctl~ allocates on first start, from the monotonic index in
 ~/data/state/alloc.jsonl~.
 
 #+BEGIN_SRC sh
 mkdir -p ~/work/otherproject           # must exist, and be a direct child
 agent shell otherproject
-ssh l1 agentctl status                 # the new address, one above the last
+agent list                             # the new address, above any ever used
 #+END_SRC
 
 The new sandbox gets its own uid, its own tap and its own ~/32~, and reaches
@@ -960,6 +971,35 @@ agent installs. The golden is shared.
 
 *Untested.* The allocation path is exercised daily; the second-project
 walkthrough as written has not been run.
+
+*** Delete a project
+
+For a project you are done with. ~delete~ shuts the sandbox down if it is
+running, discards everything ~reset~ discards, and then what ~reset~ keeps: the
+generated configuration in ~/data/config/~, the runtime directory, the
+project's captures in ~/data/logs/pcap/~, and its allocation and DNS name. No
+confirmation is asked, as with ~reset~.
+
+#+BEGIN_SRC sh
+agent list                             # WORKSPACE "missing": gone from L0
+agent delete old-scraper
+#+END_SRC
+
+*The workspace on L0 is never touched.* It is your data, not the stack's. As
+long as it exists, any attaching verb creates the project again, under a new
+address.
+
+*The shared logs are left to rotation.* The Squid, unbound and flow logs and
+the journal hold every project's lines in the same files, and age out on the
+schedule in [[*Logs][Logs]]. The captures are the only per-project log, and the
+only one nothing rotates, which is why they go with the project.
+
+*The address is not reused.* The record moves to
+~/data/state/alloc-deleted.jsonl~, which allocation still counts, so no other
+project is ever given it. The unbound and flow logs name clients by address
+alone, and this keeps every line in them attributable to the one project that
+held it. The ~/16~ has room for some 65,000 projects; only tearing the carrier
+down, which takes the logs with it, starts the count again.
 
 *** Tear the whole thing down
 
@@ -1266,9 +1306,11 @@ contains.
 
 * Sandboxes
 
-~agentctl~ on L1 creates a project on first use, boots it, and stops or resets
-it. Everything it derives — address, uid, gid, tap — comes from one monotonic
-index recorded in ~/data/state/alloc.jsonl~ under ~flock~.
+~agentctl~ on L1 creates a project on first start, boots it, and stops, resets
+or deletes it; ~start~ is the only verb that creates one. Everything it derives
+— address, uid, gid, tap — comes from one monotonic index recorded in
+~/data/state/alloc.jsonl~ under ~flock~. A deleted project's record moves to
+~/data/state/alloc-deleted.jsonl~ and its index is never handed out again.
 
 #+BEGIN_SRC sh
 nix run '.#deploy'
@@ -1314,6 +1356,7 @@ survives it:
 #+BEGIN_SRC sh
 ssh l1 agentctl stop demo
 ssh l1 agentctl reset demo        # stop, then delete the overlay
+ssh l1 agentctl delete demo       # reset, then drop config, captures, address
 #+END_SRC
 
 * The agent wrapper
@@ -1348,6 +1391,9 @@ nix run '.#golden-build'
 | ~agent start <project>~         | bring it up and push credentials, without attaching            |
 | ~agent stop <project>~          | power off, overlay intact                                      |
 | ~agent reset <project>~         | stop, then delete the overlay                                  |
+| ~agent delete <project>~        | reset, then free its config, captures and address; the         |
+|                                 | workspace on L0 is left alone                                  |
+| ~agent list~                    | every project: address, state, overlay size, missing workspace |
 | ~agent capture <project> start~ | pcap on that project's tap; ~stop~ ends it                     |
 | ~agent service <verb> [name]~   | the L1 service stacks: ~list~, ~status~, ~logs~, ~restart~     |
 
@@ -1634,7 +1680,8 @@ ssh l1 'ls -lh /data/logs/ /data/logs/squid/'
 | ~/data/logs/unbound.log~      | who resolved what, port 53 only                                  |
 | ~/data/logs/flow.log~         | permitted non-80/443 connections, and refused cross-segment ones |
 | ~/data/logs/journal/~         | unit events, QEMU, agentctl, bounded by systemd's own limits     |
-| ~/data/logs/pcap/~            | manual captures from ~agent capture~, size-capped rings          |
+| ~/data/logs/pcap/~            | manual captures from ~agent capture~, size-capped rings; not          |
+|                               | rotated, so they stay until removed by hand or by ~agent delete~      |
 
 The flow log is pulled out of the kernel journal into its own file, because an
 inventory is only useful if reading it does not mean wading through messages

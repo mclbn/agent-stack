@@ -385,6 +385,8 @@ ENTRIES
             echo "agent start <project>         bring it up, do not attach"
             echo "agent stop <project>          power off; overlay intact"
             echo "agent reset <project>         stop, then delete the overlay"
+            echo "agent delete <project>        reset, then free its config and address"
+            echo "agent list                    every project: address, state, overlay"
             echo "agent capture <project> start|stop"
             echo "agent service list"
             echo "agent service start|stop|restart|status|logs <name>"
@@ -547,9 +549,13 @@ ENTRIES
             ensure_running "$1"; push_creds "$1"
             echo "$1 is up at $(host "$1")"
             ;;
-          stop|reset)
+          stop|reset|delete)
             [ $# -eq 1 ] || usage
             ssh l1 "agentctl $verb $1"
+            ;;
+          list)
+            [ $# -eq 0 ] || usage
+            ssh l1 agentctl status
             ;;
           capture)
             [ $# -eq 2 ] || usage

@@ -89,6 +89,9 @@ let
     export PATH=${binPath}
 
     ALLOC=/data/state/alloc.jsonl
+    # Records of deleted projects, moved here rather than dropped: allocate
+    # still counts their indices, so an address is never handed out twice.
+    DELETED=/data/state/alloc-deleted.jsonl
     LOCK=/data/state/alloc.lock
     EXPORT_ROOT=/srv/projects
     GATEWAY=${site.agents.gateway}
@@ -102,6 +105,7 @@ let
         echo "agentctl start <project>   create if needed, then boot"
         echo "agentctl stop <project>    graceful shutdown, overlay kept"
         echo "agentctl reset <project>   stop, then delete the overlay"
+        echo "agentctl delete <project>  reset, then drop its config, captures and address"
         echo "agentctl status            what exists and what is running"
         echo "agentctl capture <p> start|stop   pcap on the project's tap"
       } >&2
@@ -122,17 +126,20 @@ let
     }
 
     # Allocate on first use, idempotent under flock so two concurrent first
-    # invocations cannot double-allocate.
+    # invocations cannot double-allocate. Only start comes here; every other
+    # verb goes through lookup, so a mistyped name cannot allocate an address.
     allocate() {
       project=$1
       mkdir -p /data/state
-      touch "$ALLOC"
+      touch "$ALLOC" "$DELETED"
       exec 9>"$LOCK"
       flock 9
 
       index=$(jq -r --arg p "$project" 'select(.project==$p) | .index' "$ALLOC" | tail -1)
       if [ -z "$index" ]; then
-        last=$(jq -s 'map(.index) | max // 1' "$ALLOC")
+        # Over deleted projects too, so an address in an old log line always
+        # means the one project that ever held it.
+        last=$(jq -s 'map(.index) | max // 1' "$ALLOC" "$DELETED")
         index=$((last + 1))
         derive "$index"
         jq -n -c --arg p "$project" --argjson i "$index" --arg ip "$ip" \
@@ -141,6 +148,30 @@ let
         echo "allocated $project: index $index, $ip, uid $uid, $tap" >&2
       fi
       derive "$index"
+      write_zone
+      flock -u 9
+      exec 9>&-
+    }
+
+    # An existing project's record, never a new one.
+    lookup() {
+      project=$1
+      [ -e "$ALLOC" ] || die "no project $project"
+      index=$(jq -r --arg p "$project" 'select(.project==$p) | .index' "$ALLOC" | tail -1)
+      [ -n "$index" ] || die "no project $project"
+      derive "$index"
+    }
+
+    # The inverse of allocate, under the same flock. Appended to the deleted
+    # list before it leaves alloc.jsonl, so an interrupted delete leaves the
+    # record in both rather than in neither, and running it again finishes.
+    forget() {
+      project=$1
+      exec 9>"$LOCK"
+      flock 9
+      jq -c --arg p "$project" 'select(.project==$p)' "$ALLOC" >> "$DELETED"
+      jq -c --arg p "$project" 'select(.project!=$p)' "$ALLOC" > "$ALLOC.new"
+      mv "$ALLOC.new" "$ALLOC"
       write_zone
       flock -u 9
       exec 9>&-
@@ -156,10 +187,10 @@ let
         jq -r '"local-data: \"" + .project + ".agents.${site.internalDomain}. A " + .ip + "\""' "$ALLOC"
         jq -r '"local-data-ptr: \"" + .ip + " " + .project + ".agents.${site.internalDomain}.\""' "$ALLOC"
       } > "$zone.new"
-      # Only when it actually changed. allocate() runs on start, stop, reset
-      # and capture alike, and a reload discards the whole DNS cache — so
-      # unconditionally reloading meant every agent command threw away every
-      # cached answer and sent the next lookup back out to the internet.
+      # Only when it actually changed. allocate() runs on every start, and a
+      # reload discards the whole DNS cache — so unconditionally reloading
+      # meant every agent command threw away every cached answer and sent the
+      # next lookup back out to the internet.
       if cmp -s "$zone.new" "$zone" 2>/dev/null; then
         rm -f "$zone.new"
       else
@@ -348,7 +379,7 @@ let
     cmd_stop() {
       project=$1
       valid_name "$project" || die "invalid project name: $project"
-      allocate "$project"
+      lookup "$project"
       systemctl stop "agent-vm@$project" 2>/dev/null || true
       stop_virtiofsd "$project"
       delete_tap
@@ -366,11 +397,41 @@ let
       echo "$project reset; next start is identical to the golden"
     }
 
+    # Everything reset discards, then what reset keeps: the generated config,
+    # the runtime directory, the captures and the allocation. The workspace on
+    # L0 is never touched, and the shared logs are left to rotation.
+    cmd_delete() {
+      project=$1
+      valid_name "$project" || die "invalid project name: $project"
+      lookup "$project"
+      # Before the stop, which deletes the tap tcpdump is reading.
+      systemctl stop "agent-capture@$project" 2>/dev/null || true
+      cmd_stop "$project"
+      # As in reset: never delete the backing file of a running QEMU.
+      systemctl is-active --quiet "agent-vm@$project" \
+        && die "$project is still running"
+      rm -f "/data/overlays/$project.qcow2"
+      rm -rf "/data/config/$project" "/run/agent/$project"
+      # The stamp spelled out rather than $project-*, which would also take
+      # the captures of foo-bar when deleting foo.
+      rm -f "/data/logs/pcap/$project"-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].pcap*
+      # A failed instance outlives its project and keeps the carrier degraded
+      # in `systemctl is-system-running`. The agent-fs units are --collect and
+      # clean up after themselves.
+      for unit in "agent-vm@$project" "agent-capture@$project"; do
+        systemctl reset-failed "$unit" 2>/dev/null || true
+      done
+      # Last, so that a delete interrupted before this point still finds the
+      # project when it is run again.
+      forget "$project"
+      echo "$project deleted; address $ip will not be reused, workspace left in place"
+    }
+
         cmd_capture() {
       project=$1
       action=$2
       valid_name "$project" || die "invalid project name: $project"
-      allocate "$project"
+      lookup "$project"
       case "$action" in
         start) systemctl start "agent-capture@$project"
                echo "capturing $tap to /data/logs/pcap/$project-*.pcap" ;;
@@ -380,15 +441,24 @@ let
       esac
     }
 
+    # The project name stays the first column: golden-update reads it.
     cmd_status() {
-      printf '%-20s %-12s %-10s %s\n' PROJECT ADDRESS STATE OVERLAY
+      # A missing workspace is only reported when the export is mounted. The
+      # mount is nofail, and without it every project would look abandoned.
+      mounted=
+      mountpoint -q "$EXPORT_ROOT" && mounted=1
+      printf '%-20s %-12s %-10s %-8s %s\n' PROJECT ADDRESS STATE OVERLAY WORKSPACE
       jq -r '.project + " " + .ip' "$ALLOC" 2>/dev/null | while read -r p a; do
         if systemctl is-active --quiet "agent-vm@$p"; then state=running
         elif [ -e "/data/overlays/$p.qcow2" ]; then state=stopped
         else state=reset
         fi
         size=$(du -h "/data/overlays/$p.qcow2" 2>/dev/null | cut -f1 || echo -)
-        printf '%-20s %-12s %-10s %s\n' "$p" "$a" "$state" "$size"
+        if [ -z "$mounted" ]; then workspace="?"
+        elif [ -d "$EXPORT_ROOT/$p" ]; then workspace=
+        else workspace=missing
+        fi
+        printf '%-20s %-12s %-10s %-8s %s\n' "$p" "$a" "$state" "$size" "$workspace"
       done
     }
 
@@ -400,6 +470,7 @@ let
       capture) [ $# -eq 2 ] || usage; cmd_capture "$1" "$2" ;;
       stop) [ $# -eq 1 ] || usage; cmd_stop "$1" ;;
       reset) [ $# -eq 1 ] || usage; cmd_reset "$1" ;;
+      delete) [ $# -eq 1 ] || usage; cmd_delete "$1" ;;
       status) cmd_status ;;
       *) usage ;;
     esac
