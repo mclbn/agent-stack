@@ -29,7 +29,7 @@
           carrier = nixpkgs.lib.nixosSystem {
             inherit system;
             specialArgs = { inherit site; };
-            modules = [ ./carrier/configuration.nix ];
+            modules = [ ./carrier/configuration.nix ] ++ site.carrier.extraModules;
           };
 
           # $out/carrier.qcow2
@@ -44,6 +44,44 @@
           '';
           domainXml = pkgs.writeText "${site.domainName}.xml" (import ./host/domain-xml.nix { inherit site virtiofsdWrapper; });
           networkXml = pkgs.writeText "${site.networkName}.xml" (import ./host/network-xml.nix { inherit site; });
+
+          # The ssh stanzas for L1 and the sandboxes, printed by
+          # `nix run .#ssh-config` for ~/.ssh/config. Generated rather than kept
+          # as a file, so that the address and the zone always match site.nix.
+          sshConfig = pkgs.writeText "agent-stack-ssh_config" ''
+
+            # --- agent-stack: printed by `nix run .#ssh-config` ---------------
+            # All connections are initiated from L0 inwards; nothing downstream
+            # may initiate outwards. No forced command and no restrict on the
+            # key: both would break ProxyJump, the credential push and
+            # vncviewer -via.
+
+            Host l1
+                HostName ${site.wan.address}
+                User root
+                IdentityFile ${site.sshIdentityFile}
+                IdentitiesOnly yes
+
+            # Sandboxes, by internal name only, never by address: a pattern like
+            # 10.42.* would match hosts on any network you ever reach. Nothing
+            # on L0 resolves these names: with ProxyJump, L1 does.
+            #
+            # Host key checking is off here, and only here. A sandbox regenerates
+            # its host keys on every reset, which is the point of a reset, and a
+            # habit of dismissing warnings costs more than this check is worth.
+            # The check that matters is on l1 above: reaching a sandbox means
+            # authenticating to L1 first.
+            Host *.agents.${site.internalDomain}
+                ProxyJump l1
+                User agent
+                IdentityFile ${site.sshIdentityFile}
+                IdentitiesOnly yes
+                UserKnownHostsFile /dev/null
+                StrictHostKeyChecking no
+                LogLevel ERROR
+            # --- end of agent-stack -------------------------------------------
+          '';
+          sshConfigScript = pkgs.writeShellScriptBin "agent-stack-ssh-config" "cat ${sshConfig}";
 
           # Shared preamble for the host-side scripts. They deliberately use the
           # host's own virsh and qemu-img rather than pinned ones, so they talk to
@@ -151,6 +189,9 @@
             if [ "''${1:-}" = --snapshot ] && [ -n "''${2:-}" ]; then
               SNAPSHOT=$2
             fi
+
+            # guest.extraPackages, on top of image/mkosi.conf and the profile.
+            EXTRA_PACKAGES=(${lib.escapeShellArgs site.guest.extraPackages})
             QEMU_IMG=${pkgs.qemu-utils}/bin/qemu-img
             RSYNC=${pkgs.rsync}/bin/rsync
 
@@ -273,6 +314,7 @@
               --snapshot "$SNAPSHOT" \
               --locale ${site.guest.locale} \
               --keymap ${site.guest.keymap} \
+              "''${EXTRA_PACKAGES[@]/#/--package=}" \
               --force \
               build
 
@@ -806,6 +848,7 @@
             golden-update = updateScript;
             latest-snapshot = snapshotScript;
             agent = agentScript;
+            ssh-config = sshConfigScript;
           };
 
           apps.${system} = {
@@ -836,6 +879,10 @@
             agent = {
               type = "app";
               program = "${agentScript}/bin/agent";
+            };
+            ssh-config = {
+              type = "app";
+              program = "${sshConfigScript}/bin/agent-stack-ssh-config";
             };
           };
         };

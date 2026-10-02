@@ -5,9 +5,10 @@
 # container — is one this design accepts: these are services the operator chose
 # and runs, not agent-authored code.
 #
-# One systemd unit per stack, started at boot, defined by a compose file under
-# services/<name>/. Adding a service is a directory and a line in site.nix;
-# nothing here knows about any particular one.
+# One systemd unit per stack, started at boot, defined by the compose file in
+# its directory: services/<name>/ here, or one in the site folder. Adding a
+# service is a directory and a line in site.nix; nothing here knows about any
+# particular one.
 {
   config,
   lib,
@@ -67,7 +68,7 @@ in
         # than the missing file it is. Usually means something under
         # services/<name>/ is untracked, so the flake never copied it.
         ExecStartPre = pkgs.writeShellScript "svc-${name}-check" ''
-          dir=${../services}/${name}
+          dir=${svc.directory}
           for want in compose.yml; do
             [ -e "$dir/$want" ] \
               || { echo "missing $dir/$want — is services/${name} fully tracked by git?" >&2; exit 1; }
@@ -77,8 +78,8 @@ in
         '';
         # --wait: the unit fails if a container does not come up healthy,
         # rather than reporting success over a stack that is not running.
-        ExecStart = "${pkgs.docker-compose}/bin/docker-compose -f ${../services}/${name}/compose.yml -p ${name} up -d --wait";
-        ExecStop = "${pkgs.docker-compose}/bin/docker-compose -f ${../services}/${name}/compose.yml -p ${name} down";
+        ExecStart = "${pkgs.docker-compose}/bin/docker-compose -f ${svc.directory}/compose.yml -p ${name} up -d --wait";
+        ExecStop = "${pkgs.docker-compose}/bin/docker-compose -f ${svc.directory}/compose.yml -p ${name} down";
         # A cold first start pulls images.
         TimeoutStartSec = "600";
       };

@@ -54,6 +54,15 @@ in
       '';
     };
 
+    sshIdentityFile = mkOption {
+      type = types.str;
+      default = "~/.ssh/agent-stack";
+      description = ''
+        The private half, as `nix run .#ssh-config` names it in the ssh
+        configuration it prints for L1 and the sandboxes.
+      '';
+    };
+
     imageDir = mkOption {
       type = absolutePath;
       default = "/var/lib/libvirt/images/agent";
@@ -338,6 +347,20 @@ in
         };
       };
 
+      extraPackages = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        example = [
+          "htop"
+          "visual-studio-code-bin"
+        ];
+        description = ''
+          Arch packages installed in the image on top of image/mkosi.conf and
+          the profile's own list, passed to mkosi as --package. A package from
+          guest.aurPackages is installed only once it is named here too.
+        '';
+      };
+
       aurPackages = mkOption {
         type = types.listOf types.str;
         default = [ ];
@@ -350,8 +373,8 @@ in
           where they exist.
 
           Building a package does not install it: its *package* name also has
-          to be in the image's package list, and a package name is not always
-          the AUR name — yay-bin provides yay.
+          to be in guest.extraPackages, and a package name is not always the
+          AUR name — yay-bin provides yay.
         '';
       };
 
@@ -404,8 +427,9 @@ in
       description = ''
         unbound on L1 is authoritative for these. Sandboxes are
         <project>.agents.<internalDomain>; service stacks are
-        <name>.svc.<internalDomain>. Your ~/.ssh/config matches the same zone
-        and has to be edited alongside it.
+        <name>.svc.<internalDomain>. The ssh configuration printed by
+        `nix run .#ssh-config` matches the same zone, so print it again into
+        ~/.ssh/config after changing this.
       '';
     };
 
@@ -580,14 +604,26 @@ in
                 defaultText = lib.literalExpression ''"http://<name>.svc.''${internalDomain}:<port>/mcp"'';
                 description = "What agents are told, and what unbound answers for.";
               };
+              directory = mkOption {
+                type = types.path;
+                default = "${../services}/${name}";
+                defaultText = lib.literalExpression "services/<name> in the agent-stack repository";
+                example = lib.literalExpression "./services/my-service";
+                description = ''
+                  The directory holding the stack's compose.yml and whatever
+                  it mounts. A stack of your own lives in your site folder:
+                  directory = ./services/my-service, written without quotes,
+                  is relative to site.nix.
+                '';
+              };
             };
           }
         )
       );
       default = { };
       description = ''
-        Container stacks run by L1 itself, started at boot. Each name must
-        match a directory under services/ holding a compose.yml.
+        Container stacks run by L1 itself, started at boot, each from the
+        compose.yml in its directory.
 
         Not VMs: a VM per MCP server costs 768 MB and a boot to run three
         containers, and the threat it would address — an MCP server escaping
@@ -596,6 +632,19 @@ in
 
         searxng is defined by the stack itself, so adding a stack of your own
         keeps it; turn it off with serviceStacks.searxng.enable = false.
+      '';
+    };
+
+    # -------------------------------------------------------------- carrier --
+    carrier.extraModules = mkOption {
+      type = types.listOf types.deferredModule;
+      default = [ ];
+      example = lib.literalExpression "[ ./carrier-local.nix ]";
+      description = ''
+        NixOS modules added to L1's own configuration, for a change that has
+        no setting of its own: an extra package on L1, an nftables rule. They
+        receive the site settings as `site`, as the stack's own modules do.
+        Applied by `nix run .#deploy`, or in place by nixos-rebuild switch.
       '';
     };
 
