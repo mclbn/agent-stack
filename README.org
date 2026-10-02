@@ -9,7 +9,8 @@ search through a service you run yourself. The sandbox is disposable:
 ~agent reset~ returns it to the image it was built from.
 
 Everything site-local — paths, sizing, which agents, which credentials, which
-services — lives in one file, ~site.nix~.
+services — lives in one short file, ~site.nix~, in a folder of your own. This
+repository holds the stack, never your settings.
 
 * How it fits together
 
@@ -17,7 +18,7 @@ Three layers, each holding the one above it at arm's length.
 
 | Layer | What it is                                       | What lives there                          |
 |-------+--------------------------------------------------+-------------------------------------------|
-| L0    | your own machine                                 | this repository, your secrets, your       |
+| L0    | your own machine                                 | your site folder, your secrets, your      |
 |       |                                                  | project files, and the golden image build |
 | L1    | one libvirt VM, /the carrier/: NixOS, built      | the filtering policy, the logs, and the   |
 |       | from this flake                                  | state that has to survive                 |
@@ -273,63 +274,67 @@ L0. Nothing outside the golden image build depends on the host being Arch.
 
 * Quickstart
 
-With the host packages from the previous section installed, this is the path
-from there to an agent running in its own VM. Every step has a section of its
-own further down; this is the order to take them in.
+With the host packages from the previous section installed, these six steps go
+from there to an agent running in its own VM. Each has a section of its own
+further down.
 
-Two things cause most first-run failures, and both fail quietly:
+*Every ~nix run~, ~nix build~ and ~nix profile~ command in this README runs
+from your site folder*, the one step 1 creates. It is a plain folder holding
+your settings, and nothing in it needs Git.
 
-- *A flake only sees the files Git tracks.* A new or moved file is invisible to
-  every command below until ~git add -A~. This is the single most common cause
-  of a confusing failure in this project.
-- *~guest.profile~ is decided before the first build, not after.* The default,
-  ~light~, has no editor, no display stack and no document toolchain. Moving to
-  ~full~ later means building the image again: tens of minutes, and around
-  20 GB.
-
-*1. Directories and the key.* The export root is the one directory tree on L0
-that L1 can see, and every project is a direct child of it.
+*1. Create your site folder.*
 
 #+BEGIN_SRC sh
-mkdir -p ~/work && chmod 700 ~/work
-mkdir -p ~/work/demo               # a project to start with
-mkdir -p ~/agent-dotfiles          # agent configuration, shared into every sandbox
+mkdir ~/agent-site && cd ~/agent-site
+nix flake init -t github:mclbn/agent-stack
+#+END_SRC
 
-# the stack's ssh keypair, generated here and never leaving L0
+This writes ~flake.nix~, which you leave alone, and ~site.nix~, which is yours.
+A ~flake.lock~ appears with the first command below: it pins the version of
+the stack you are running.
+
+*2. Make the folders and the key.* The export root holds your projects, one
+sub-folder each, and is the only part of L0 that L1 can see.
+
+#+BEGIN_SRC sh
+mkdir -p ~/work/demo && chmod 700 ~/work     # demo: a project to start with
+mkdir -p ~/agent-dotfiles                    # copied into every new sandbox
 ssh-keygen -t ed25519 -f ~/.ssh/agent-stack -C agent-stack
+cat ~/.ssh/agent-stack.pub                   # the line step 3 needs
 #+END_SRC
 
-*2. Site configuration.* ~exportRoot~ and ~operatorSshKey~ both say ~CHANGEME~
-and are checked when the configuration is evaluated, so a forgotten edit fails
-the build rather than the boot. Set ~dotfilesRoot~ and ~guest.profile~ while
-you are there. See [[*Customizing: site.nix][Customizing: site.nix]].
+*3. Edit ~site.nix~.* Replace the three ~CHANGEME~ values with your own:
 
-#+BEGIN_SRC sh
-$EDITOR site.nix
-
-# ssh config. The sandbox stanza matches internal names only, never addresses:
-# L1's addressing does not belong in your personal config, and a 10.42.*
-# pattern would match unrelated hosts elsewhere.
-cat host/ssh_config >> ~/.ssh/config
+#+BEGIN_SRC nix
+exportRoot = "/home/alice/work";
+dotfilesRoot = "/home/alice/agent-dotfiles";
+operatorSshKey = "ssh-ed25519 AAAAC3Nz... agent-stack";   # the whole line cat printed
 #+END_SRC
 
-*3. Build and install the carrier*, the L1 VM that holds everything else.
+Then choose ~profile~ in the ~guest~ block, now rather than later. ~"light"~
+builds in minutes and has no Emacs, no VNC desktop and no TeX; ~"full"~ has all
+three and takes around 20 GB. Switching afterwards means building the image
+again. Everything else has a default — see [[*Settings][Settings]] — and a
+leftover ~CHANGEME~ or a mistyped name stops the next command with an error
+naming it.
+
+*4. Build and start the carrier*, the L1 VM that holds everything else.
 
 #+BEGIN_SRC sh
-git add -A
-nix build '.#image'        # -> result/carrier.qcow2  (~10 min, builds in a VM)
-nix run '.#install'        # sudo: disks, network, domain, start
+nix run '.#ssh-config' >> ~/.ssh/config   # once: how ssh reaches L1 and the sandboxes
+nix build '.#image'                       # ~10 min, builds in a VM
+nix run '.#install'                       # asks for sudo: disks, network, the VM
 ssh l1 true && echo "carrier reachable"
 #+END_SRC
 
-*4. Build the golden image*, the Arch image every sandbox is cloned from.
-Minutes for ~light~; tens of minutes and around 20 GB for ~full~.
+*5. Build the golden image*, the Arch image every sandbox is cloned from:
+minutes for ~light~, tens of minutes for ~full~.
 
 #+BEGIN_SRC sh
 nix run '.#golden-build'
 #+END_SRC
 
-*5. Install the wrapper and start a sandbox.* The first ~agent~ command for a
+*6. Install the wrapper and start a sandbox.* The first ~agent~ command for a
 project creates it.
 
 #+BEGIN_SRC sh
@@ -341,45 +346,73 @@ Inside, ~/work~ is ~~/work/demo~ from L0, a file you create there appears on L0
 owned by you, and ~curl https://example.com~ leaves through L1's proxy and
 shows up in its log.
 
-~agent shell~ needs no credentials. To run an actual agent, add one entry per
-provider under ~credentials~ in ~site.nix~ — see
-[[*Credentials][Credentials]] — and then:
+~agent shell~ needs no credentials; an agent needs its API key. Uncomment its
+entry under ~credentials.entries~ in ~site.nix~, check that the command prints
+the key and nothing else — see [[*Credentials][Credentials]] — and then:
 
 #+BEGIN_SRC sh
+nix profile upgrade agent
 agent claude-api demo
 #+END_SRC
 
-* Customizing: site.nix
+Keep the site folder with your backups: it is all that makes this installation
+yours. Moving to a newer stack later is [[*Upgrade the stack][one command]].
 
-~site.nix~ is the only file that differs between installations. Paths, sizing,
-what goes in the image, credentials, log retention and the service stacks all
-live there, and nothing else should need editing to run this somewhere new.
+* Settings
 
-~exportRoot~ and ~operatorSshKey~ both say ~CHANGEME~. They are checked when
-the configuration is evaluated, so forgetting one fails the build rather than
-producing a carrier that cannot be reached.
+~site.nix~ holds only what differs from the defaults. Every setting, with its
+type, its default and what it does, is described in
+[[file:site/options.nix][site/options.nix]]. A fuller ~site.nix~ looks like this:
+
+#+BEGIN_SRC nix
+{
+  exportRoot = "/home/alice/work";
+  dotfilesRoot = "/home/alice/agent-dotfiles";
+  operatorSshKey = "ssh-ed25519 AAAAC3Nz... agent-stack";
+
+  guest = {
+    profile = "full";
+    snapshot = "2026/09/27";
+    timezone = "Europe/Paris";
+    extraPackages = [ "htop" ];
+  };
+
+  sandbox.memoryMiB = 8192;               # a dot is short for a block of one
+  serviceStacks.searxng.enable = false;
+}
+#+END_SRC
+
+Three things worth knowing:
+
+- *A list you set replaces the default list.* The lists meant for additions,
+  ~guest.extraPackages~ and ~guest.aurPackages~, start empty.
+- *Every name and value is checked.* ~guest.timzone~ fails with
+  ~The option `guest.timzone' does not exist~, and ~profile = "lite"~ with the
+  values it accepts.
+- *To see a value in effect*, defaults included:
+  ~nix eval '.#site.guest.timezone'~.
 
 ** Four settings to get right before the first build
 
 Not irreversible, but each is awkward enough afterwards to be worth a minute
 now.
 
-| Setting         | Why it is awkward later                                          |
-|-----------------+------------------------------------------------------------------|
-| ~guest.profile~   | ~light~ has no Emacs, no display stack and no document             |
-|                 | toolchain — ~vi~ and ~nano~ are in both. Moving to ~full~ means      |
-|                 | building the image again and resetting every project: tens of    |
-|                 | minutes, and around 20 GB.                                       |
-| ~l1.dataDiskSize~ | ~install~ creates the data disk only if it is absent, and never    |
-|                 | touches it again — that is what protects your state on every     |
-|                 | later run. Growing it afterwards is a manual resize of the file  |
-|                 | and the filesystem inside it.                                    |
-| ~wan.*~           | ~install~ defines the libvirt network only if it does not          |
-|                 | already exist, so changing the segment means removing it by hand |
-|                 | first (see below).                                               |
-| ~internalDomain~  | The zone is also written into ~host/ssh_config~, which is plain    |
-|                 | text and cannot read ~site.nix~ — and you have appended a copy     |
-|                 | of that to ~~/.ssh/config~. Three places, not one.                 |
+| Setting           | Why it is awkward later                                          |
+|-------------------+------------------------------------------------------------------|
+| ~guest.profile~   | ~light~ has no Emacs, no display stack and no document           |
+|                   | toolchain — ~vi~ and ~nano~ are in both. Moving to ~full~ means  |
+|                   | building the image again and resetting every project: tens of    |
+|                   | minutes, and around 20 GB.                                       |
+| ~l1.dataDiskSize~ | ~install~ creates the data disk only if it is absent, and never  |
+|                   | touches it again — that is what protects your state on every     |
+|                   | later run. Growing it afterwards is a manual resize of the file  |
+|                   | and the filesystem inside it.                                    |
+| ~wan.*~           | ~install~ defines the libvirt network only if it does not        |
+|                   | already exist, so changing the segment means removing it by hand |
+|                   | first (see below).                                               |
+| ~internalDomain~  | The zone is also in ~~/.ssh/config~, where Quickstart step 4     |
+|                   | put it: after a change, print ~nix run '.#ssh-config'~ again     |
+|                   | and replace the old stanzas with it.                             |
 
 ** Everything else, and what to re-run
 
@@ -392,7 +425,8 @@ moment you make one.
 |                                                     | rebuilds; the new value appears at the |
 |                                                     | next attach.                           |
 | ~logging.*~, ~serviceStacks~, ~agents.*~,           | ~nix run '.#deploy'~                   |
-| ~sandbox.memoryMiB~, ~sandbox.vcpu~                 |                                        |
+| ~sandbox.memoryMiB~, ~sandbox.vcpu~,                |                                        |
+| ~carrier.extraModules~                              |                                        |
 | ~dns.*~, ~ntp.*~                                    | ~nixos-rebuild … switch~ — in place,   |
 |                                                     | about fifteen seconds, no reboot and   |
 |                                                     | no image swap. See "Change how DNS is  |
@@ -403,14 +437,17 @@ moment you make one.
 | ~imageDir~, ~domainName~, ~domainUuid~,             | ~nix run '.#install'~                  |
 | ~networkName~, ~bridgeName~                         |                                        |
 | ~guest.*~ — locale, keymap, timezone, profile,      | ~nix run '.#golden-build'~, then       |
-| snapshot, vnc, aurPackages, agentInstallers         | ~agent reset~ on each project, since a |
-|                                                     | running sandbox keeps the golden it    |
+| snapshot, vnc, extraPackages, aurPackages,          | ~agent reset~ on each project, since a |
+| agentInstallers                                     | running sandbox keeps the golden it    |
 |                                                     | started from                           |
+| ~sshIdentityFile~                                   | ~nix run '.#ssh-config'~ again, in     |
+|                                                     | place of the old stanzas in            |
+|                                                     | ~~/.ssh/config~                        |
 
 Two notes on that table. A ~sandbox.*~ change reaches a project only when it is
 next started, so ~agent stop~ then ~agent start~. And adding to
 ~guest.aurPackages~ builds the package but does not install it: the package
-name also has to appear in ~image/mkosi.conf~ or one of the profile files.
+name also has to be in ~guest.extraPackages~.
 
 Changing ~wan.*~ needs the old network removed first, because ~install~ leaves
 an existing one alone:
@@ -420,30 +457,6 @@ sudo virsh net-destroy agent-wan
 sudo virsh net-undefine agent-wan
 nix run '.#install'
 #+END_SRC
-
-** Which file holds what
-
-~site.nix~ should cover site-local changes. When the behaviour itself needs
-changing, this is where it lives:
-
-| File                        | What it decides                                          |
-|-----------------------------+----------------------------------------------------------|
-| ~carrier/configuration.nix~ | L1 itself: disks, mounts, ssh, time, the base system     |
-| ~carrier/network.nix~       | unbound, Squid, and the nftables policy                  |
-| ~carrier/sandbox.nix~       | ~agentctl~, and how a sandbox VM is started              |
-| ~carrier/services.nix~      | one systemd unit per container stack                     |
-| ~carrier/logging.nix~       | where logs are written, and how they rotate              |
-| ~image/~                    | the golden image's contents and defaults                 |
-| ~services/<name>/~          | one directory per stack, holding its compose file        |
-| ~host/domain-xml.nix~       | the libvirt domain for L1                                |
-| ~host/network-xml.nix~      | the libvirt NAT network                                  |
-| ~host/ssh_config~           | the ~l1~ and sandbox stanzas for your own ssh config     |
-| ~flake.nix~                 | the L0-side commands: ~install~, ~deploy~,               |
-|                             | ~golden-build~, ~golden-update~, ~latest-snapshot~,      |
-|                             | ~clean~, ~agent~                                         |
-
-One constraint on all of it: paths inside ~flake.nix~ are relative, so files
-cannot be moved or renamed without editing it.
 
 * Common tasks
 
@@ -623,7 +636,6 @@ to re-run]].
 
 #+BEGIN_SRC sh
 $EDITOR site.nix
-git add -A
 
 nix profile upgrade agent              # credentials.*
 nix run '.#deploy'                     # logging, serviceStacks, agents, sizing
@@ -637,13 +649,16 @@ keeps the golden it started from.
 
 *** Change the carrier's configuration
 
-~switch~ is quicker and keeps L1's rollback history; ~deploy~ replaces the
-system disk and discards it. Neither touches ~/data~ — see
+For a change no setting covers — a package on L1, a rule of your own — write a
+NixOS module in your site folder and list it in ~carrier.extraModules~. It
+receives your settings as ~site~, as the stack's own modules do. ~switch~ is
+quicker and keeps L1's rollback history; ~deploy~ replaces the system disk and
+discards it. Neither touches ~/data~ — see
 [[*Changing the carrier configuration][Changing the carrier configuration]].
 
 #+BEGIN_SRC sh
-$EDITOR carrier/network.nix            # or configuration.nix, sandbox.nix, ...
-git add -A
+$EDITOR carrier-local.nix              # e.g. { pkgs, ... }: { environment.systemPackages = [ pkgs.htop ]; }
+$EDITOR site.nix                       # carrier.extraModules = [ ./carrier-local.nix ];
 
 # in place, L1 must be running
 nix run 'nixpkgs#nixos-rebuild' -- switch --flake '.#agentvm' --target-host root@l1
@@ -654,7 +669,9 @@ nix run '.#deploy'
 
 Use ~test~ rather than ~switch~ while experimenting: it activates without
 becoming the boot default, so a reboot returns to the last generation that
-worked.
+worked. Changing what the stack's own modules do — ~carrier/network.nix~ and
+its neighbours — is [[*Working on the stack itself][working on the stack
+itself]].
 
 *** Add a credential or a provider
 
@@ -664,7 +681,7 @@ at the next attach — see [[*Adding a provider][Adding a provider]].
 #+BEGIN_SRC sh
 pass show ai/newprovider               # check the command prints the key alone
 $EDITOR site.nix                       # one entry under credentials.entries
-git add -A && nix profile upgrade agent
+nix profile upgrade agent
 agent start demo                       # pushes credentials without attaching
 ssh demo.agents.contained 'cat /run/creds/env'
 #+END_SRC
@@ -680,7 +697,7 @@ Memory and CPU are a deploy; the data disk is not — see
 
 #+BEGIN_SRC sh
 $EDITOR site.nix                       # l1.memoryMiB, l1.vcpu, sandbox.*
-git add -A && nix run '.#deploy'       # redefines the domain
+nix run '.#deploy'                     # redefines the domain
 agent stop demo && agent start demo    # a sandbox.* change needs this too
 #+END_SRC
 
@@ -714,7 +731,6 @@ One command, then a boot on a throwaway overlay to see it come up — see
 [[*Checking the golden works][Checking the golden works]].
 
 #+BEGIN_SRC sh
-git add -A
 nix run '.#golden-build'               # minutes for light, tens for full
 ssh -t l1 golden-boot                  # ctrl-a x to quit; root, no password
 agent reset demo                       # per project, to pick the new golden up
@@ -726,38 +742,39 @@ log in on the serial console.
 
 *** Update the golden's Arch pin
 
-One command does the lot: newest snapshot, recorded in ~site.nix~, every
-project reset, then the rebuild — see
+One command does the lot: newest snapshot, the rebuild, the new date written
+into ~site.nix~, then every project reset — see
 [[*Updating the golden][Updating the golden]].
 
 #+BEGIN_SRC sh
 nix run '.#golden-update'
-git add -A && git commit site.nix -m 'golden: bump snapshot'
 #+END_SRC
 
-The projects are reset only once the build has succeeded, so a failed build
-costs no overlay; the old golden, kept while they were pinned to it, is then
-pruned. Commit the new date — it is the record of what the golden contains.
+Nothing is recorded or reset until the build has succeeded, so a failed build
+costs no overlay and leaves ~site.nix~ as it was; the old golden, kept while
+the projects were pinned to it, is then pruned. The date in ~site.nix~ is the
+record of what the golden contains.
 
-*** Add an AUR package
+*** Add a package to the image
 
-Two edits, not one: the package is built from ~site.nix~ and installed from
-~mkosi.conf~ — see [[*The golden image][The golden image]].
+An Arch package is one line in ~site.nix~. An AUR package is two, because it is
+built under one name and installed under another — ~yay-bin~ provides ~yay~ —
+see [[*The golden image][The golden image]].
 
 #+BEGIN_SRC sh
-$EDITOR site.nix                       # add the name to guest.aurPackages
-$EDITOR image/mkosi.conf               # and to Packages=, or a profile file
-git add -A
+$EDITOR site.nix        # guest.extraPackages = [ "htop" ];
+                        # AUR: also guest.aurPackages = [ "foo-bin" ]; and "foo" in extraPackages
 nix run '.#golden-build'
-agent reset demo && ssh demo.agents.contained 'pacman -Q newpackage'
+agent reset demo && ssh demo.agents.contained 'pacman -Q htop'
 #+END_SRC
 
-Leaving out the second edit builds the package and does not install it, which
+An AUR package left out of ~extraPackages~ is built and not installed, which
 fails silently: the build succeeds and the binary is simply absent. ~makepkg~
 runs on L0, so a package needing Rust needs Rust on the host.
 
-*Untested.* The mechanism is proven by ~yay~ and ~emacs-lsp-booster~; adding a
-further package has not been done since.
+*Untested.* The AUR mechanism is proven by ~yay~ and ~emacs-lsp-booster~;
+~extraPackages~ is checked to reach mkosi, which appends it to the image's own
+list, but a build with one has not been run.
 
 *** Switch between light and full
 
@@ -766,7 +783,6 @@ minutes — see [[*The golden image][The golden image]].
 
 #+BEGIN_SRC sh
 $EDITOR site.nix                       # guest.profile = "full" or "light"
-git add -A
 nix run '.#golden-build'
 agent reset demo                       # per project
 agent emacs demo                       # full only; light refuses by name
@@ -783,22 +799,23 @@ timed or verified end to end.
 
 *** Add or remove a service stack
 
-A directory with a compose file, an entry in ~site.nix~, and a deploy — see
-[[*Adding a service][Adding a service]].
+A directory with a compose file in your site folder, an entry in ~site.nix~,
+and a deploy — see [[*Adding a service][Adding a service]].
 
 #+BEGIN_SRC sh
-mkdir services/myservice
+mkdir -p services/myservice
 $EDITOR services/myservice/compose.yml # publish on $SVC_BIND, bridge svcbr-*
-$EDITOR site.nix                       # under serviceStacks: enable, port
-git add -A && nix run '.#deploy'
+$EDITOR site.nix   # serviceStacks.myservice = { port = 3001; directory = ./services/myservice; };
+nix run '.#deploy'
 agent service list
 #+END_SRC
 
-Read ~services/searxng/compose.yml~ for the conventions rather than copying the
-directory: its ~settings.yml~ is SearXNG's own, and a copied compose file still
-bind-mounts it. Removing a stack is ~enable = false~ and another deploy, not a
-command — the units are generated from that setting, so one stopped by hand
-comes back at the next boot.
+Read [[file:services/searxng/compose.yml][services/searxng/compose.yml]] in this
+repository for the conventions rather than copying the directory: its
+~settings.yml~ is SearXNG's own, and a copied compose file still bind-mounts
+it. Removing a stack is ~enable = false~ and another deploy, not a command —
+the units are generated from that setting, so one stopped by hand comes back
+at the next boot.
 
 *** Find out why a service is unhappy
 
@@ -846,7 +863,6 @@ networks that will not allow one]].
 
 #+BEGIN_SRC sh
 $EDITOR site.nix        # resolver = "recursive" | "gateway" | [ "9.9.9.9@853#dns.quad9.net" ]
-git add -A
 nix run 'nixpkgs#nixos-rebuild' -- switch --flake '.#agentvm' --target-host root@l1
 ssh l1 'dig @127.0.0.1 example.com +short'
 #+END_SRC
@@ -869,16 +885,17 @@ how to tell in two commands whether that is the problem you have.
 *** Iterate on firewall rules
 
 Edit, ~test~, and repeat: running sandboxes survive a ruleset reload, so you
-can iterate against live traffic — see
+can iterate against live traffic. The policy is ~carrier/network.nix~, part of
+the stack, so this is done in a clone of it — see
+[[*Working on the stack itself][Working on the stack itself]] and
 [[*Iterating on rules][Iterating on rules]].
 
 #+BEGIN_SRC sh
-$EDITOR carrier/network.nix
-git add -A
-nix run 'nixpkgs#nixos-rebuild' -- test --flake '.#agentvm' --target-host root@l1
+$EDITOR ~/src/agent-stack/carrier/network.nix
+nix run 'nixpkgs#nixos-rebuild' -- test --flake '.#agentvm' --target-host root@l1 \
+  --override-input agent-stack ~/src/agent-stack
 ssh l1 'nft list ruleset | grep -n "tap-"'
-# once it works
-nix run 'nixpkgs#nixos-rebuild' -- switch --flake '.#agentvm' --target-host root@l1
+# once it works: the same with switch, then commit it in the clone
 #+END_SRC
 
 ~test~ activates without becoming the boot default, so a reboot undoes it.
@@ -936,6 +953,24 @@ and opened end to end.
 
 ** Housekeeping
 
+*** Upgrade the stack
+
+~flake.lock~ in your site folder pins the stack's version, so nothing changes
+until you ask. Moving to the newest is one command, then whatever the new
+version changed:
+
+#+BEGIN_SRC sh
+cp flake.lock flake.lock.previous      # the way back: copy it over flake.lock
+nix flake update agent-stack
+nix run '.#deploy'                     # L1; stops running sandboxes
+nix run '.#golden-build'               # the image; then agent reset per project
+nix profile upgrade agent              # the wrapper
+#+END_SRC
+
+Which of the last three a version needs is in its commit messages; when in
+doubt run all three, since none touches ~/data~ or your projects. A setting the
+new version renamed or removed fails at the first command, naming it.
+
 *** Check disk usage, and reclaim it
 
 Naive measurement is wrong here three different ways, so use these — see
@@ -974,7 +1009,7 @@ agent list                             # the new address, above any ever used
 The new sandbox gets its own uid, its own tap and its own ~/32~, and reaches
 neither L0 nor the first sandbox — that is the same segment-deny policy, not a
 second copy of it. No ~deploy~, no image rebuild, and no ssh config edit: the
-sandbox stanza in ~host/ssh_config~ matches internal names by pattern, so
+sandbox stanza from ~nix run '.#ssh-config'~ matches internal names by pattern, so
 ~otherproject.agents.contained~ resolves through L1 as the first one does.
 
 What it costs is one overlay, which starts at kilobytes and grows with what the
@@ -1042,7 +1077,7 @@ nix store gc                                 # store paths from past builds
 
 Then two files of your own the stack appended to: the ~l1~ and sandbox stanzas
 in ~~/.ssh/config~, and the host keys in ~~/.ssh/known_hosts~. Neither is
-removed for you.
+removed for you, and nor is your site folder.
 
 Step 1 is not strictly required — removing the data disk takes the overlays
 with it — but it is what makes the teardown reversible up to that point.
@@ -1054,10 +1089,9 @@ testing it means destroying a working stack.
 
 * Build and install the carrier
 
-Two commands, the same ones as Quickstart step 3, with what they leave behind.
+Two commands, the same ones as Quickstart step 4, with what they leave behind.
 
 #+BEGIN_SRC sh
-git add -A
 nix build '.#image'        # -> result/carrier.qcow2  (~10 min, builds in a VM)
 nix run '.#install'        # sudo: disks, network, domain, start
 #+END_SRC
@@ -1154,7 +1188,6 @@ image path instead. It works from any state, stopping the domain first if it is
 up:
 
 #+BEGIN_SRC sh
-git add -A
 nix run '.#deploy'
 #+END_SRC
 
@@ -1182,7 +1215,6 @@ discovered halfway through it. They are installed as part of
 open questions first, since four of the six are about this command.
 
 #+BEGIN_SRC sh
-git add -A
 nix run '.#golden-build'
 #+END_SRC
 
@@ -1212,11 +1244,11 @@ keeping ~~/.local/bin/claude~ as a symlink into ~~/.local/share/claude/versions/
 npm is deliberately not used: it is deprecated for Claude Code, and an npm
 global install that cannot write its own directory has auto-update disabled.
 
-AUR packages come from ~site.nix~'s ~guest.aurPackages~: ~golden-build~ builds
-each with makepkg on L0 and hands them to mkosi as a local repository, so ~yay~
-and ~emacs-lsp-booster~ are in the golden without the image ever building
-anything itself. Adding one means a line there *and* the package name in
-~mkosi.conf~ or a profile.
+AUR packages are built by ~golden-build~ with makepkg on L0 and handed to mkosi
+as a local repository, so ~yay~ and ~emacs-lsp-booster~ are in the golden
+without the image ever building anything itself. Those two are always built;
+~guest.aurPackages~ adds to them, and ~guest.extraPackages~ installs what was
+built, along with any Arch package, on top of ~mkosi.conf~ and the profile.
 
 ~site.nix~ chooses between two images through ~guest.profile~. ~full~ is the
 complete image, around 20-25 GB. ~light~ omits the editor,
@@ -1310,11 +1342,12 @@ now reproduces what was built today. Updating is one command:
 nix run '.#golden-update'
 #+END_SRC
 
-It resolves the newest available snapshot, records it in ~site.nix~, rebuilds,
-resets every project onto the new golden, prunes the old one, and prints how to
-start them again. The reset comes *after* the build on purpose: if the build
-fails, nothing has been reset and the projects keep their overlays on the old
-golden.
+It resolves the newest available snapshot, rebuilds against it, records it in
+~site.nix~, resets every project onto the new golden, prunes the old one, and
+prints how to start them again. Recording and resetting come *after* the build
+on purpose: if the build fails, ~site.nix~ is unchanged and the projects keep
+their overlays on the old golden. It edits the ~snapshot = "…";~ line of your
+~site.nix~, which the template has; without one it says what to add.
 
 Two things the pin does *not* cover, worth knowing before assuming a rebuild is
 reproducible: the AUR packages are built from whatever the AUR has that day,
@@ -1322,8 +1355,7 @@ and the agent installers always fetch the current release. So a rebuild months
 later gives old Arch packages with current agents. That is usually what is
 wanted; pin the agents by version in ~site.nix~ if it ever is not.
 
-Commit ~site.nix~ afterwards — the new date is the record of what the golden
-contains.
+The date it writes into ~site.nix~ is the record of what the golden contains.
 
 * Sandboxes
 
@@ -1345,7 +1377,7 @@ direction the design allows. L1 holds no private key, so it cannot ssh in
 itself:
 
 #+BEGIN_SRC sh
-ssh demo.agents.contained       # by name; ProxyJump through L1 is in host/ssh_config
+ssh demo.agents.contained       # by name, through L1: see nix run '.#ssh-config'
 #+END_SRC
 
 Inside, the checks that matter:
@@ -1644,8 +1676,10 @@ reasoned from the same mechanism and has not been run end to end.
 
 ** Iterating on rules
 
-Rule changes are meant to be cheap, and they are: edit ~carrier/network.nix~,
-then switch. Only the changed derivations rebuild, and nftables replaces its
+Rule changes are meant to be cheap, and they are: edit ~carrier/network.nix~
+in your clone of the stack, then switch with ~--override-input agent-stack
+~/src/agent-stack~ added — see [[*Working on the stack itself][Working on the
+stack itself]]. Only the changed derivations rebuild, and nftables replaces its
 ruleset atomically.
 
 #+BEGIN_SRC sh
@@ -1880,12 +1914,25 @@ otherwise come back at the next boot.
 
 ** Adding a service
 
+A stack of your own lives in your site folder, next to ~site.nix~:
+
 #+BEGIN_SRC sh
-mkdir services/myservice
+mkdir -p services/myservice
 $EDITOR services/myservice/compose.yml    # see searxng's for the conventions
-$EDITOR site.nix                          # add it under serviceStacks
-git add -A && nix run '.#deploy'
+$EDITOR site.nix
+nix run '.#deploy'
 #+END_SRC
+
+#+BEGIN_SRC nix
+serviceStacks.myservice = {
+  port = 3001;                            # the one port agents may reach
+  directory = ./services/myservice;       # no quotes: relative to site.nix
+};
+#+END_SRC
+
+~endpoint~, what agents are told, defaults to
+~http://myservice.svc.<internalDomain>:3001/mcp~; set it if the server listens
+on another path.
 
 Two substitutions the unit provides, and the compose file should use:
 ~$SVC_BIND~ is L1's address on the agents segment — publish there, never on
@@ -2226,6 +2273,55 @@ golden build cache, which
 ~sudo rm -rf /var/tmp/agent-stack-golden~ reclaims at the cost of the next
 build redownloading its packages.
 
+* Working on the stack itself
+
+Changing what the stack does, rather than how your site sets it up, happens in
+a clone of this repository. Your site folder keeps its settings and builds from
+the clone instead of from GitHub when told to:
+
+#+BEGIN_SRC sh
+git clone https://github.com/mclbn/agent-stack ~/src/agent-stack
+$EDITOR ~/src/agent-stack/carrier/network.nix
+
+cd ~/agent-site
+nix run '.#deploy' --override-input agent-stack ~/src/agent-stack
+#+END_SRC
+
+~--override-input~ works on every command here, ~nixos-rebuild~ included, and
+writes nothing to ~flake.lock~: leave it off and you are back on the pinned
+version. ~golden-update~ hands the override on to the build it runs.
+
+*A clone is a Git repository, so Nix sees only the files Git tracks.* A new
+file there is invisible until ~git add~ — the single most common cause of a
+confusing failure when working on the stack. Your site folder is a plain
+folder and has no such rule.
+
+~nix flake check~ in the clone evaluates everything, L1 and every command, with
+placeholder settings, and builds nothing: the quick test that a change still
+holds together.
+
+** Which file holds what
+
+| File                        | What it decides                                          |
+|-----------------------------+----------------------------------------------------------|
+| ~site/options.nix~          | every setting: its type, its default and what it does    |
+| ~template/~                 | what ~nix flake init~ copies into a new site folder      |
+| ~carrier/configuration.nix~ | L1 itself: disks, mounts, ssh, time, the base system     |
+| ~carrier/network.nix~       | unbound, Squid, and the nftables policy                  |
+| ~carrier/sandbox.nix~       | ~agentctl~, and how a sandbox VM is started              |
+| ~carrier/services.nix~      | one systemd unit per container stack                     |
+| ~carrier/logging.nix~       | where logs are written, and how they rotate              |
+| ~image/~                    | the golden image's contents and defaults                 |
+| ~services/<name>/~          | the stacks that ship with it; yours live in your folder  |
+| ~host/domain-xml.nix~       | the libvirt domain for L1                                |
+| ~host/network-xml.nix~      | the libvirt NAT network                                  |
+| ~flake.nix~                 | ~lib.mkStack~, which builds a site's L0-side commands:   |
+|                             | ~install~, ~deploy~, ~golden-build~, ~golden-update~,    |
+|                             | ~latest-snapshot~, ~clean~, ~agent~, ~ssh-config~        |
+
+One constraint on all of it: paths inside ~flake.nix~ are relative, so files
+cannot be moved or renamed without editing it.
+
 * If something goes wrong
 
 | Symptom                                                | Where to look                           |
@@ -2233,8 +2329,15 @@ build redownloading its packages.
 | ~zsh: no matches found: .#image~                       | zsh's ~EXTENDED_GLOB~ eats the ~#~.     |
 |                                                        | Quote the flake reference, or use       |
 |                                                        | ~noglob~.                               |
-| ~Path 'x' does not exist in Git repository~            | Flakes only see tracked files. ~git add |
-|                                                        | -A~.                                    |
+| ~Path 'x' does not exist in Git repository~,           | A folder in Git shows Nix only the      |
+| or a file you just made is ignored                     | files Git tracks: a clone of the stack, |
+|                                                        | or a site folder inside a Git repo.     |
+|                                                        | ~git add~ the file, or move the site    |
+|                                                        | folder out.                             |
+| ~The option `x' does not exist~                        | A misspelt setting in ~site.nix~; the   |
+|                                                        | real names are in ~site/options.nix~.   |
+| ~… with the CHANGEME placeholder replaced~             | A required value in ~site.nix~ still    |
+|                                                        | holds the template's placeholder.       |
 | ~error: creating directory "/nix/store"~               | The client is not using the daemon.     |
 |                                                        | ~export NIX_REMOTE=daemon~.             |
 | ~error: opening file '/nix/store'~                     | The store was never created. On Arch:   |
@@ -2267,7 +2370,7 @@ build redownloading its packages.
 |                                                        | dated image.                            |
 | ~REMOTE HOST IDENTIFICATION HAS CHANGED~ for a sandbox | Expected after ~agentctl reset~: the    |
 |                                                        | sandbox regenerated its host keys. The  |
-|                                                        | stanza in ~host/ssh_config~ prevents    |
+|                                                        | stanza from ~.#ssh-config~ prevents     |
 |                                                        | it; if you connected before adding it,  |
 |                                                        | ~ssh-keygen -R 10.42.0.2~ clears the    |
 |                                                        | stale entry.                            |
@@ -2390,10 +2493,9 @@ authenticate the upstream; the mechanism is ordinary unbound, but if 853 is
 blocked on the network you are on, the failure will look like the port-53 case
 and the fix is ~gateway~.
 
-*~internalDomain~ lives in three places*: ~site.nix~, ~host/ssh_config~, and
-the copy of that you appended to ~~/.ssh/config~. The first two could be one —
-~host/ssh_config~ could be generated from ~site.nix~ exactly as the libvirt XML
-already is.
+*~internalDomain~ lives in two places*: ~site.nix~, and the stanzas
+~nix run '.#ssh-config'~ printed into ~~/.ssh/config~. The second is generated
+from the first but not kept in step with it: a change means printing it again.
 
 *~golden-build~ still refuses to run without ~/usr/bin/pacman~ with the message
 "this must run on an Arch host".* If the Ubuntu path works, that message is
