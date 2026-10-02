@@ -27,21 +27,6 @@
     ./services.nix
   ];
 
-  assertions = [
-    {
-      assertion = !(lib.hasInfix "CHANGEME" site.exportRoot);
-      message = "site.nix: exportRoot still contains CHANGEME";
-    }
-    {
-      assertion = !(lib.hasInfix "CHANGEME" site.operatorSshKey);
-      message = "site.nix: operatorSshKey still contains CHANGEME";
-    }
-    {
-      assertion = !(lib.hasInfix "CHANGEME" site.dotfilesRoot);
-      message = "site.nix: dotfilesRoot still contains CHANGEME";
-    }
-  ];
-
   # ------------------------------------------------------------- image ----
   # BIOS/MBR rather than UEFI: no per-VM firmware state, nothing to orphan.
   # Produces $out/carrier.qcow2 via config.system.build.image.

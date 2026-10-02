@@ -1,2 +1,5 @@
 result
 result-*
+
+# Your settings live in your own site folder, never in this repository.
+/site.nix
