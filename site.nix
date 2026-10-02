@@ -29,7 +29,7 @@
 
   # ---------------------------------------------------------- L1 sizing ----
   l1 = {
-    memoryMiB = 8192;
+    memoryMiB = 10240;
     vcpu = 8;
     # Domain-wide CPU cap: <global_quota>/<global_period>. 400000/100000 is
     # four cores' worth for the entire nested tree.
@@ -133,7 +133,7 @@
   guest = {
     locale = "en_US.UTF-8";
     keymap = "us";
-    timezone = "UTC";
+    timezone = "Europe/Paris";
 
     # "full" or "light". full is the image the specification describes, around
     # 20-25 GB. light omits the editor, the display stack and the document
@@ -247,7 +247,7 @@
     # every value from one GPG-encrypted netrc file instead, which is what an
     # Emacs user already has; set authinfoFile below and leave the commands as
     # documentation.
-    source = "command";
+    source = "authinfo";
     authinfoFile = "~/.authinfo.gpg";
 
     # Recipes for the command source, any of which can be mixed freely:

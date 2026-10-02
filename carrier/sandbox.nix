@@ -447,18 +447,33 @@ let
       # mount is nofail, and without it every project would look abandoned.
       mounted=
       mountpoint -q "$EXPORT_ROOT" && mounted=1
-      printf '%-20s %-12s %-10s %-8s %s\n' PROJECT ADDRESS STATE OVERLAY WORKSPACE
+      current=$(readlink -f /data/images/current || true)
+      printf '%-20s %-12s %-10s %-8s %-22s %s\n' \
+        PROJECT ADDRESS STATE OVERLAY IMAGE WORKSPACE
       jq -r '.project + " " + .ip' "$ALLOC" 2>/dev/null | while read -r p a; do
         if systemctl is-active --quiet "agent-vm@$p"; then state=running
         elif [ -e "/data/overlays/$p.qcow2" ]; then state=stopped
         else state=reset
         fi
         size=$(du -h "/data/overlays/$p.qcow2" 2>/dev/null | cut -f1 || echo -)
+        # The golden the overlay is pinned to, read from the overlay itself as
+        # golden-build's prune does; -U because a running QEMU holds the lock.
+        image=-
+        if [ -e "/data/overlays/$p.qcow2" ]; then
+          base=$(qemu-img info -U --output=json "/data/overlays/$p.qcow2" 2>/dev/null \
+                 | jq -r '."backing-filename" // empty' || true)
+          image=$(basename "$base" .qcow2)
+          image=''${image#arch-}
+          if [ -z "$base" ] || [ ! -e "$base" ]; then image=missing
+          elif [ "$base" != "$current" ]; then image="$image (old)"
+          fi
+        fi
         if [ -z "$mounted" ]; then workspace="?"
         elif [ -d "$EXPORT_ROOT/$p" ]; then workspace=
         else workspace=missing
         fi
-        printf '%-20s %-12s %-10s %-8s %s\n' "$p" "$a" "$state" "$size" "$workspace"
+        printf '%-20s %-12s %-10s %-8s %-22s %s\n' \
+          "$p" "$a" "$state" "$size" "$image" "$workspace"
       done
     }
 

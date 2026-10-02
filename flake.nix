@@ -64,7 +64,7 @@
           echo "==> installing $IMAGE_STORE/carrier.qcow2 as $target"
           install -m 0600 "$IMAGE_STORE/carrier.qcow2" "$target"
           ln -sfn "$target" "$SYSTEM_LINK"
-          # One system image retained, as with the golden on L1: the one just
+          # One system image retained: the one just
           # installed, which the symlink now points at. Nothing that has to
           # survive lives on the system disk — that is what /data is for — so
           # recovery from a bad image is to deploy a good one, not to keep
@@ -255,7 +255,9 @@
         raw=$(sudo find "$BUILD/out" -maxdepth 1 -name '*.raw' -print -quit)
         [ -n "$raw" ] || { echo "mkosi produced no .raw image" >&2; exit 1; }
 
-        stamp=$(date +%Y%m%d)
+        # Down to the second: a second build the same day must not take the
+        # name, and so the place, of a golden that overlays are pinned to.
+        stamp=$(date +%Y%m%d-%H%M%S)
         local_qcow=$BUILD/arch-$stamp.qcow2
         echo "==> converting to qcow2"
         sudo "$QEMU_IMG" convert -O qcow2 "$raw" "$local_qcow"
@@ -268,16 +270,33 @@
 
         # The symlink is repointed only after the copy lands. Overlays record
         # the resolved dated path, never this symlink, so repointing it can
-        # never rebase an existing overlay. One golden is retained, so a
-        # forgotten overlay fails loudly instead of reading a base that is gone.
-        ssh root@l1 "
-          set -e
-          ln -sfn /data/images/golden/arch-$stamp.qcow2 /data/images/current
-          find /data/images/golden -maxdepth 1 -type f -name 'arch-*.qcow2' \
-            ! -name 'arch-$stamp.qcow2' -print -delete | sed 's/^/    pruned /'
-          echo '    current -> '\$(readlink /data/images/current)
+        # never rebase an existing overlay. An old golden is pruned only once
+        # no overlay is pinned to it: deleting it would strand those projects,
+        # running ones included, since QEMU holds the file open. Overlays are
+        # read after the repoint, so one created meanwhile is on the new golden.
+        ssh root@l1 bash -s -- "$stamp" <<'EOF'
+          set -euo pipefail
+          new=/data/images/golden/arch-$1.qcow2
+          ln -sfn "$new" /data/images/current
+          declare -A users=()
+          for o in /data/overlays/*.qcow2; do
+            [ -e "$o" ] || continue
+            # -U: a running QEMU holds the lock on its overlay.
+            b=$(qemu-img info -U --output=json "$o" | jq -r '."backing-filename" // empty')
+            [ -n "$b" ] && users[$b]+=" $(basename "$o" .qcow2)"
+          done
+          for g in /data/images/golden/arch-*.qcow2; do
+            [ -e "$g" ] && [ "$g" != "$new" ] || continue
+            if [ -n "''${users[$g]:-}" ]; then
+              echo "    kept $(basename "$g") (''${users[$g]# })"
+            else
+              rm -f "$g"
+              echo "    pruned $(basename "$g")"
+            fi
+          done
+          echo "    current -> $(readlink /data/images/current)"
           df -h /data | tail -1 | sed 's/^/    /'
-        "
+        EOF
 
         sudo rm -f "$local_qcow"
         # The workspace is scratch, but the staged config is kept: it is what
@@ -292,9 +311,9 @@
 
         # Routine maintenance in one command: find the newest archive
         # snapshot, record it, reset every project, rebuild, and say how to
-        # start them again. Resetting *before* the rebuild matters — a golden
-        # is pruned once its replacement lands, and an overlay pinned to a
-        # deleted one refuses to start.
+        # start them again. Resetting moves every project onto the new golden
+        # and leaves the old one pinned by nothing, so golden-build prunes it;
+        # a project left unreset would keep the old golden, and its space.
         [ "$(id -u)" -ne 0 ] || { echo "run as your normal user" >&2; exit 1; }
         repo=$(${pkgs.git}/bin/git rev-parse --show-toplevel)
         cd "$repo"

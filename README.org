@@ -488,7 +488,7 @@ sudo virsh net-list                    # agent-wan active
 ssh l1 true && echo "carrier reachable"
 ssh l1 'systemctl is-system-running'   # running, or degraded + what failed
 ssh l1 'systemctl list-units "svc-*" --no-pager'   # the service stacks
-ssh l1 agentctl status                 # every project: address, state, overlay
+ssh l1 agentctl status                 # every project: address, state, overlay, image
 ssh l1 'btrfs filesystem usage -h /data | head -4'
 #+END_SRC
 
@@ -734,9 +734,9 @@ nix run '.#golden-update'
 git add -A && git commit site.nix -m 'golden: bump snapshot'
 #+END_SRC
 
-The reset happens *before* the rebuild on purpose: the old golden is pruned
-once its replacement lands, and an overlay pinned to a deleted one refuses to
-start. Commit the new date — it is the record of what the golden contains.
+The reset moves every project onto the new golden: ~golden-build~ keeps an old
+golden for as long as an overlay is pinned to it, so the reset is also what
+lets the old one be pruned. Commit the new date — it is the record of what the golden contains.
 
 *** Add an AUR package
 
@@ -1052,8 +1052,8 @@ nix run '.#install'        # sudo: disks, network, domain, start
 #+END_SRC
 
 ~install~ is idempotent: rerunning it redefines the domain and installs a fresh
-system image without touching ~/data~. One system image is retained, exactly as
-one golden is on L1: both ~install~ and ~deploy~ prune the older ones. Nothing
+system image without touching ~/data~. One system image is retained: both
+~install~ and ~deploy~ prune the older ones. Nothing
 that has to survive lives on the system disk, so recovering from a bad image
 means deploying a good one rather than reaching for a previous copy.
 
@@ -1178,7 +1178,12 @@ nix run '.#golden-build'
 It builds under ~/var/tmp/agent-stack-golden~ with sudo, converts to qcow2,
 copies the result into ~/data/images/golden/~ on L1 as you rather than as root
 (the stack's private key never leaves your account), repoints ~current~ only
-after the copy lands, and prunes to the single retained golden. The package
+after the copy lands, and prunes every older golden that no overlay is pinned
+to. One that is still in use is kept and named with the projects holding it,
+running or not; ~agent list~ shows it in the IMAGE column as ~(old)~, and
+resetting or deleting those projects lets the next build prune it. Goldens are
+named to the second, so a rebuild the same day never takes the name of one an
+overlay is pinned to. The package
 cache is kept so that a rebuild is cheap; the workspace and the raw image are
 not.
 
@@ -1290,10 +1295,9 @@ nix run '.#golden-update'
 #+END_SRC
 
 It resolves the newest available snapshot, records it in ~site.nix~, resets
-every project, rebuilds, and prints how to start them again. Resetting happens
-*before* the rebuild on purpose: a golden is pruned once its replacement lands,
-and an overlay pinned to a deleted one refuses to start rather than silently
-reading a different base.
+every project, rebuilds, and prints how to start them again. The reset is what
+moves the projects onto the new golden; the old one is pruned once no overlay
+is pinned to it.
 
 Two things the pin does *not* cover, worth knowing before assuming a rebuild is
 reproducible: the AUR packages are built from whatever the AUR has that day,
@@ -1393,7 +1397,8 @@ nix run '.#golden-build'
 | ~agent reset <project>~         | stop, then delete the overlay                                  |
 | ~agent delete <project>~        | reset, then free its config, captures and address; the         |
 |                                 | workspace on L0 is left alone                                  |
-| ~agent list~                    | every project: address, state, overlay size, missing workspace |
+| ~agent list~                    | every project: address, state, overlay size, golden, missing   |
+|                                 | workspace                                                      |
 | ~agent capture <project> start~ | pcap on that project's tap; ~stop~ ends it                     |
 | ~agent service <verb> [name]~   | the L1 service stacks: ~list~, ~status~, ~logs~, ~restart~     |
 
@@ -2191,7 +2196,8 @@ ssh l1 'ls -lh /data/images/golden/; du -sh /data/overlays/* 2>/dev/null'
 ssh l1 'for f in /data/overlays/*.qcow2; do qemu-img info "$f"; done'
 #+END_SRC
 
-Reading the output: one golden is retained at any time, each overlay starts at
+Reading the output: a golden is retained while it is ~current~ or an overlay
+is pinned to it (the IMAGE column of ~agent list~), each overlay starts at
 kilobytes and grows with what the agent installs and builds, and
 ~agentctl reset~ returns an overlay to nothing. If ~/data~ fills, the overlays are the place to
 look first, then the golden. On L0 nothing grows without being asked except the
