@@ -254,7 +254,7 @@ in
           root says do not exist. Forwarding to a router that serves
           "home.lan." needs that name listed here or the validator will —
           correctly — refuse the answer. Empty by default: agents have no
-          business reaching the LAN, and the forward rules drop it anyway.
+          business resolving names on the LAN.
         '';
       };
     };
@@ -298,9 +298,10 @@ in
         type = types.str;
         default = "en_US.UTF-8";
         description = ''
-          Passed to mkosi by golden-build. A locale other than en_US.UTF-8 or
-          C.UTF-8 also means editing image/mkosi.skeleton/etc/locale.gen,
-          since a glibc locale has to be generated before it can be selected.
+          Passed to mkosi by golden-build, and used by the agent wrapper for
+          tmux. A locale other than en_US.UTF-8 or C.UTF-8 also needs a line in
+          image/mkosi.skeleton/etc/locale.gen in a clone of the stack, since a
+          glibc locale has to be generated before it can be selected.
         '';
       };
       keymap = mkOption {
@@ -316,7 +317,7 @@ in
         default = "light";
         description = ''
           "full" or "light". full is the image the specification describes,
-          around 20-25 GB. light omits the editor, the display stack and the
+          around 20 GB. light omits the editor, the display stack and the
           document toolchain — no Emacs, no TigerVNC, no texlive — leaving a
           sandbox that can still build, run and debug code, use databases and
           run containers. Worth having while iterating on the stack itself: it
@@ -514,9 +515,10 @@ in
                 type = types.str;
                 default = "";
                 description = ''
-                  A command on L0 that prints the secret and nothing else. A
-                  trailing newline is stripped; anything else it prints
-                  becomes part of the key. Ignored when source is "authinfo".
+                  A command on L0 that prints the secret on its first line.
+                  Only that line is used, without its newline, and stderr is
+                  discarded: extra text on that line becomes part of the key.
+                  Ignored when source is "authinfo".
                 '';
               };
             };
