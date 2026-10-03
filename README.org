@@ -303,12 +303,17 @@ ssh-keygen -t ed25519 -f ~/.ssh/agent-stack -C agent-stack
 cat ~/.ssh/agent-stack.pub                   # the line step 3 needs
 #+END_SRC
 
-*3. Edit ~site.nix~.* Replace the three ~CHANGEME~ values with your own:
+*3. Edit ~site.nix~.* Replace the three ~CHANGEME~ values with your own, and
+keep the rest of the file: everything in it sits between its first ~{~ and its
+last ~}~.
 
 #+BEGIN_SRC nix
-exportRoot = "/home/alice/work";
-dotfilesRoot = "/home/alice/agent-dotfiles";
-operatorSshKey = "ssh-ed25519 AAAAC3Nz... agent-stack";   # the whole line cat printed
+{
+  exportRoot = "/home/alice/work";
+  dotfilesRoot = "/home/alice/agent-dotfiles";
+  operatorSshKey = "ssh-ed25519 AAAAC3Nz... agent-stack";   # the whole line cat printed
+  ...
+}
 #+END_SRC
 
 Then choose ~profile~ in the ~guest~ block, now rather than later. ~"light"~
@@ -2334,6 +2339,9 @@ cannot be moved or renamed without editing it.
 |                                                        | or a site folder inside a Git repo.     |
 |                                                        | ~git add~ the file, or move the site    |
 |                                                        | folder out.                             |
+| ~syntax error, unexpected '='~ at ~site.nix:1~         | The file's outer ~{~ and ~}~ are        |
+|                                                        | missing: every setting sits between     |
+|                                                        | them.                                   |
 | ~The option `x' does not exist~                        | A misspelt setting in ~site.nix~; the   |
 |                                                        | real names are in ~site/options.nix~.   |
 | ~… with the CHANGEME placeholder replaced~             | A required value in ~site.nix~ still    |
