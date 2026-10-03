@@ -911,28 +911,81 @@
         '';
       };
 
-      # Evaluates everything and builds nothing, with placeholder values that
-      # pass the checks: `nix flake check` catches a broken option or script
-      # without a site of its own.
-      checks.${system}.eval =
-        let
-          stack = mkStack {
-            modules = [
-              {
-                exportRoot = "/home/check/agent-work";
-                dotfilesRoot = "/home/check/agent-dotfiles";
-                operatorSshKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIcheck check";
-              }
-            ];
-          };
-          drvs = [
-            stack.nixosConfigurations.agentvm.config.system.build.toplevel
-          ]
-          ++ builtins.attrValues stack.packages.${system};
-        in
-        pkgs.writeText "agent-stack-eval" (
-          lib.concatMapStringsSep "\n" (d: builtins.unsafeDiscardStringContext d.drvPath) drvs
-        );
+      checks.${system} = {
+        # Evaluates everything and builds nothing, with placeholder values that
+        # pass the checks: `nix flake check` catches a broken option or script
+        # without a site of its own.
+        eval =
+          let
+            stack = mkStack {
+              modules = [
+                {
+                  exportRoot = "/home/check/agent-work";
+                  dotfilesRoot = "/home/check/agent-dotfiles";
+                  operatorSshKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIcheck check";
+                }
+              ];
+            };
+            drvs = [
+              stack.nixosConfigurations.agentvm.config.system.build.toplevel
+            ]
+            ++ builtins.attrValues stack.packages.${system};
+          in
+          pkgs.writeText "agent-stack-eval" (
+            lib.concatMapStringsSep "\n" (d: builtins.unsafeDiscardStringContext d.drvPath) drvs
+          );
+
+        # template/site.nix lists every setting, commented out at its default.
+        # Uncommenting all of them must define every setting and change none:
+        # a setting added to site/options.nix without its line in the template,
+        # or a line whose value has drifted from the default, fails here.
+        template =
+          let
+            text = builtins.replaceStrings [ "CHANGEME" ] [ "check" ] (
+              builtins.readFile ./template/site.nix
+            );
+            # A commented-out setting is `# name = value`, a quoted list element
+            # or a closing bracket; the template's prose never takes those forms.
+            uncomment =
+              line:
+              let
+                m = builtins.match "( *)# ( *([a-zA-Z][a-zA-Z0-9_.]* = .*|\".*\"|[]}];?))" line;
+              in
+              if m == null then line else builtins.elemAt m 0 + builtins.elemAt m 1;
+            everything = lib.concatMapStringsSep "\n" uncomment (lib.splitString "\n" text);
+            eval =
+              t:
+              lib.evalModules {
+                modules = [
+                  ./site/options.nix
+                  (import (builtins.toFile "site.nix" t))
+                ];
+              };
+            asIs = eval text;
+            full = eval everything;
+            # The credential entries in the template are an example, not a
+            # default: there are none by default.
+            comparable =
+              c:
+              builtins.unsafeDiscardStringContext (
+                builtins.toJSON (
+                  removeAttrs c [ "_module" ]
+                  // {
+                    credentials = removeAttrs c.credentials [ "entries" ];
+                    guest = removeAttrs c.guest [ "timezone" ];
+                  }
+                )
+              );
+            missing = builtins.filter (
+              o: (o.visible or true) != false && lib.head o.loc != "_module" && o.highestPrio >= 1500
+            ) (lib.collect lib.isOption full.options);
+          in
+          assert lib.assertMsg (missing == [ ])
+            "template/site.nix has no line for: ${lib.concatMapStringsSep ", " (o: lib.showOption o.loc) missing}";
+          assert lib.assertMsg (comparable full.config == comparable asIs.config)
+            "template/site.nix: a commented-out value differs from its default in site/options.nix";
+          pkgs.writeText "agent-stack-template-check" "ok";
+      };
 
       formatter.${system} = pkgs.nixfmt-tree;
     };
