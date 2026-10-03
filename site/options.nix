@@ -660,21 +660,36 @@ in
     };
 
     # ------------------------------------------------------------- segments --
+    # Fixed, not settings: agentctl derives every sandbox address from
+    # 10.42.0.0/16 and the golden image names 10.42.0.1 as gateway, resolver
+    # and time source, so a different value here would only break sandboxes.
+    # Declared so that the carrier modules can name them, and read-only, so
+    # that setting one in site.nix fails with "read-only" instead of taking
+    # hold.
     agents = {
       cidr = mkOption {
         type = types.str;
-        default = "10.42.0.0/16";
+        internal = true;
+        readOnly = true;
         description = "The agents segment, which every sandbox's address comes from.";
       };
       gateway = mkOption {
         type = types.str;
-        default = "10.42.0.1";
+        internal = true;
+        readOnly = true;
         description = "L1's address on it, reused on every tap.";
       };
     };
   };
 
-  # Defined here rather than as the option's default, so that a stack added in
-  # site.nix sits alongside it instead of replacing it.
-  config.serviceStacks.searxng.port = lib.mkDefault 3000;
+  config = {
+    agents = {
+      cidr = "10.42.0.0/16";
+      gateway = "10.42.0.1";
+    };
+
+    # Defined here rather than as the option's default, so that a stack added
+    # in site.nix sits alongside it instead of replacing it.
+    serviceStacks.searxng.port = lib.mkDefault 3000;
+  };
 }
