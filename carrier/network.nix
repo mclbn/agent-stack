@@ -200,14 +200,16 @@ in
   # ------------------------------------------------------------ filtering --
   networking.firewall = {
     enable = true;
-    allowedTCPPorts = [ 22 ];
     # Default-deny forward, with the exceptions below. Without this the kernel
     # forwards everything and the topology is only a convention.
     filterForward = true;
 
     # Services L1 offers downstream. ssh is deliberately not among them: the
     # requirement is directional, and nothing downstream may reach upstream.
+    # ssh is accepted from L0 alone, its address on the wan segment, and sshd
+    # listens on nothing else (configuration.nix).
     extraInputRules = ''
+      iifname "en*" ip saddr ${site.wan.gateway} tcp dport 22 accept comment "ssh from L0"
       iifname "tap-*" meta nfproto ipv6 drop
       iifname "tap-*" udp dport 53 accept comment "unbound"
       iifname "tap-*" tcp dport 53 accept comment "unbound"

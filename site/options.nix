@@ -464,9 +464,10 @@ in
         Note the boundary this is *not*. The mount is read-only, but the
         copies are not: an agent can rewrite its own configuration inside the
         sandbox, and you will not see that from here. What the read-only mount
-        buys is that it cannot reach back to this directory. The L0-to-L1 hop
-        is writable, so a root agent that remounts the guest side could still
-        write here — keep this to configuration.
+        buys is that it cannot reach back to this directory: both virtiofsd
+        instances that serve it, on L0 and on L1, refuse writes, so even a root
+        agent that remounts its side writable cannot change it. Every sandbox
+        can read all of it, though — keep this to configuration.
 
         Symlinks in this directory are ignored, and named in the sandbox's
         journal rather than skipped in silence. They cannot be followed:

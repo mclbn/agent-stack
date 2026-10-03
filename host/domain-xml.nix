@@ -1,7 +1,11 @@
 # The libvirt domain for L1, generated from the flake so it stays text and
 # versioned. The system disk is referenced through a symlink, so an image swap
 # needs no XML edit.
-{ site, virtiofsdWrapper }:
+{
+  site,
+  virtiofsdWrapper,
+  virtiofsdReadonlyWrapper,
+}:
 
 ''
   <domain type='kvm'>
@@ -89,10 +93,11 @@
 
       <!-- Configuration files for every sandbox's home. A separate export
            from the workspace because the two have different lifetimes and
-           different scopes: this one is shared by every project. -->
+           different scopes: this one is shared by every project. Read-only,
+           enforced by this virtiofsd rather than by L1's mount option. -->
       <filesystem type='mount' accessmode='passthrough'>
         <driver type='virtiofs'/>
-        <binary path='${virtiofsdWrapper}'/>
+        <binary path='${virtiofsdReadonlyWrapper}'/>
         <source dir='${site.dotfilesRoot}'/>
         <target dir='dotfiles'/>
       </filesystem>

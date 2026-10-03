@@ -297,6 +297,10 @@ let
         unit=agent-fs-$project-$tag
         systemctl is-active --quiet "$unit" && continue
         install -d -m 0755 "$dir"
+        # The dotfiles are read-only here as on every other hop: the guest's
+        # ro mount is the guest's to undo, this flag is not.
+        ro_flag=
+        [ "$tag" = dotfiles ] && ro_flag=--readonly
         # virtiofsd runs as root: creating a file owned by uid 1000 needs
         # CAP_CHOWN, which is what makes uid 1000 end to end literally true.
         systemd-run --unit="$unit" --collect \
@@ -304,7 +308,7 @@ let
             --socket-path="$run/$tag.sock" \
             --shared-dir="$dir" \
             --inode-file-handles=never \
-            --sandbox=namespace >/dev/null
+            --sandbox=namespace $ro_flag >/dev/null
         # QEMU runs as the project uid and virtiofsd as root, so the socket has
         # to be handed over once it exists. Waiting beats an ExecStartPost that
         # can fire before the socket is created.

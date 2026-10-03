@@ -42,7 +42,14 @@
           virtiofsdWrapper = pkgs.writeShellScript "virtiofsd-no-file-handles" ''
             exec ${pkgs.virtiofsd}/bin/virtiofsd --inode-file-handles=never "$@"
           '';
-          domainXml = pkgs.writeText "${site.domainName}.xml" (import ./host/domain-xml.nix { inherit site virtiofsdWrapper; });
+          # The same, refusing every write, for the dotfiles: libvirt has no
+          # read-only setting for a virtiofs share either.
+          virtiofsdReadonlyWrapper = pkgs.writeShellScript "virtiofsd-no-file-handles-readonly" ''
+            exec ${pkgs.virtiofsd}/bin/virtiofsd --inode-file-handles=never --readonly "$@"
+          '';
+          domainXml = pkgs.writeText "${site.domainName}.xml" (
+            import ./host/domain-xml.nix { inherit site virtiofsdWrapper virtiofsdReadonlyWrapper; }
+          );
           networkXml = pkgs.writeText "${site.networkName}.xml" (import ./host/network-xml.nix { inherit site; });
 
           # The ssh stanzas for L1 and the sandboxes, printed by
@@ -99,6 +106,7 @@
             DOMAIN_XML=${domainXml}
             NETWORK_XML=${networkXml}
             VIRTIOFSD_WRAPPER=${virtiofsdWrapper}
+            VIRTIOFSD_READONLY_WRAPPER=${virtiofsdReadonlyWrapper}
             SYSTEM_LINK="$IMAGE_DIR/l1-system-current.qcow2"
             DATA_DISK="$IMAGE_DIR/l1-data.raw"
 
@@ -138,12 +146,13 @@
             # inode at once and reuses its number, and L1 then hands a sandbox
             # the wrong inode (EBADF, ESTALE). Hence the wrapper the domain names.
             #
-            # The domain XML refers to that wrapper by store path, and nothing
-            # else keeps it alive: without a GC root, nix-collect-garbage on L0
-            # would delete the binary libvirt starts for L1. One root, replaced
-            # on every install and deploy.
+            # The domain XML refers to the wrappers by store path, and nothing
+            # else keeps them alive: without a GC root, nix-collect-garbage on
+            # L0 would delete the binaries libvirt starts for L1. One root per
+            # wrapper, replaced on every install and deploy.
             pin_virtiofsd_wrapper() {
               ln -sfn "$VIRTIOFSD_WRAPPER" /nix/var/nix/gcroots/agent-stack-virtiofsd
+              ln -sfn "$VIRTIOFSD_READONLY_WRAPPER" /nix/var/nix/gcroots/agent-stack-virtiofsd-readonly
             }
             domain_running() {
               virsh list --name --state-running 2>/dev/null | grep -qx "$DOMAIN"

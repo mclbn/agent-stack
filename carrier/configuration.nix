@@ -124,10 +124,17 @@
   };
 
   # The dotfiles directory from L0, re-exported read-only into every sandbox.
+  # Read-only at every hop: L0's virtiofsd refuses writes (--readonly, see
+  # the domain XML), this mount is ro, and agentctl starts the sandboxes'
+  # virtiofsd for it with --readonly too. A sandbox that remounts its copy
+  # writable still cannot change what every future sandbox is seeded from.
   fileSystems."/srv/dotfiles" = {
     device = "dotfiles"; # virtiofs tag, set in the domain XML
     fsType = "virtiofs";
-    options = [ "nofail" ];
+    options = [
+      "ro"
+      "nofail"
+    ];
   };
 
   # The export root, re-exported per project into sandboxes in a later slice.
@@ -160,8 +167,19 @@
   networking.nftables.enable = true;
 
   # ------------------------------------------------------------- access ---
+  # ssh is for L0 only. sshd listens on L1's address on the wan segment and
+  # nowhere else, and network.nix accepts port 22 only from L0's address on
+  # that segment: a sandbox reaches neither. openFirewall would open the port
+  # on every interface, so it is off.
   services.openssh = {
     enable = true;
+    openFirewall = false;
+    listenAddresses = [
+      {
+        addr = site.wan.address;
+        port = 22;
+      }
+    ];
     settings = {
       PermitRootLogin = "prohibit-password";
       PasswordAuthentication = false;
@@ -184,9 +202,19 @@
     after = [ "data.mount" ];
     requires = [ "data.mount" ];
   };
+  # And for the address it listens on: before the wan link is routable there
+  # is nothing to bind. Should the bind fail anyway, sshd retries every five
+  # seconds for as long as it takes, rather than hitting systemd's start limit
+  # after half a second and staying down until the next boot.
   systemd.services.sshd = {
-    after = [ "data.mount" ];
+    after = [
+      "data.mount"
+      "network-online.target"
+    ];
     requires = [ "data.mount" ];
+    wants = [ "network-online.target" ];
+    serviceConfig.RestartSec = 5;
+    unitConfig.StartLimitIntervalSec = 0;
   };
   # One keypair, held only on L0. No forced command and no restrict: that would
   # break ProxyJump, the credential push and vncviewer -via.
