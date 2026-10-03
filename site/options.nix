@@ -31,6 +31,9 @@ let
   };
 in
 {
+  # The timezone was guest.timezone while it applied to the sandboxes only.
+  imports = [ (lib.mkRenamedOptionModule [ "guest" "timezone" ] [ "timezone" ]) ];
+
   options = {
     # ---------------------------------------------------------------- L0 -----
     exportRoot = mkOption {
@@ -67,6 +70,23 @@ in
       type = absolutePath;
       default = "/var/lib/libvirt/images/agent";
       description = "Where L1's disks live on L0. Root-owned, mode 0700.";
+    };
+
+    timezone = mkOption {
+      type = types.str;
+      default = "UTC";
+      example = "Europe/Paris";
+      description = ''
+        A tz database name, for L1 and the sandboxes alike, so that their logs
+        and clocks read the same as L0's when L0 is set to it too. L1 takes it
+        at the next deploy or switch; the sandboxes from the next golden-build,
+        through mkosi.postinst, which fails the build on a name the image's
+        tzdata does not have.
+
+        Logs written in local time repeat an hour when daylight saving time
+        ends. The Squid and flow logs carry the UTC offset on every line, which
+        tells the two apart; the unbound log does not.
+      '';
     };
 
     # ---------------------------------------------------------- libvirt ------
@@ -288,16 +308,6 @@ in
         default = "us";
         description = "Console keymap, passed to mkosi by golden-build.";
       };
-      timezone = mkOption {
-        type = types.str;
-        default = "UTC";
-        example = "Europe/Paris";
-        description = ''
-          A tz database name. Linked by mkosi.postinst, which fails the build
-          on a name the image's tzdata does not have.
-        '';
-      };
-
       profile = mkOption {
         type = types.enum [
           "full"

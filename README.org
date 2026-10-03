@@ -375,10 +375,11 @@ type, its default and what it does, is described in
   dotfilesRoot = "/home/alice/agent-dotfiles";
   operatorSshKey = "ssh-ed25519 AAAAC3Nz... agent-stack";
 
+  timezone = "Europe/Paris";             # L1 and the sandboxes, like L0
+
   guest = {
     profile = "full";
     snapshot = "2026/09/27";
-    timezone = "Europe/Paris";
     extraPackages = [ "htop" ];
   };
 
@@ -395,7 +396,7 @@ Three things worth knowing:
   ~The option `guest.timzone' does not exist~, and ~profile = "lite"~ with the
   values it accepts.
 - *To see a value in effect*, defaults included:
-  ~nix eval '.#site.guest.timezone'~.
+  ~nix eval '.#site.timezone'~.
 
 ** Four settings to get right before the first build
 
@@ -441,10 +442,13 @@ moment you make one.
 | ~l1.cpuPeriod~, ~l1.systemDiskMiB~                  | replacing the system disk              |
 | ~imageDir~, ~domainName~, ~domainUuid~,             | ~nix run '.#install'~                  |
 | ~networkName~, ~bridgeName~                         |                                        |
-| ~guest.*~ — locale, keymap, timezone, profile,      | ~nix run '.#golden-build'~, then       |
+| ~guest.*~ — locale, keymap, profile,                | ~nix run '.#golden-build'~, then       |
 | snapshot, vnc, extraPackages, aurPackages,          | ~agent reset~ on each project, since a |
 | agentInstallers                                     | running sandbox keeps the golden it    |
 |                                                     | started from                           |
+| ~timezone~                                          | both of the two rows above: ~deploy~   |
+|                                                     | for L1, ~golden-build~ and a reset for |
+|                                                     | the sandboxes                          |
 | ~sshIdentityFile~                                   | ~nix run '.#ssh-config'~ again, in     |
 |                                                     | place of the old stanzas in            |
 |                                                     | ~~/.ssh/config~                        |
@@ -1263,8 +1267,8 @@ while iterating on the stack itself, since it builds in minutes and copies to
 L1 in seconds.
 
 Console locale, keymap and timezone come from ~site.nix~ (~guest.locale~,
-~guest.keymap~, ~guest.timezone~) and default to ~en_US.UTF-8~, ~us~ and
-~UTC~. A locale other than those already in
+~guest.keymap~, and ~timezone~, which L1 shares) and default to ~en_US.UTF-8~,
+~us~ and ~UTC~. A locale other than those already in
 ~image/mkosi.skeleton/etc/locale.gen~ has to be added there too, since it must
 be generated before it can be selected. The timezone is the exception among
 the three: it is not handed to mkosi, whose ~systemd-firstboot~ comes from
@@ -1739,7 +1743,7 @@ ssh l1 'ls -lh /data/logs/ /data/logs/squid/'
 
 | Where                         | What                                                             |
 |-------------------------------+------------------------------------------------------------------|
-| ~/data/logs/squid/access.log~ | per request: time, client project name, hostname, bytes,         |
+| ~/data/logs/squid/access.log~ | per request: local time, client project name, hostname, bytes,   |
 |                               | duration. ~/var/log/squid~ is a symlink here, which is the       |
 |                               | path Squid's own configuration names                             |
 | ~/data/logs/unbound.log~      | who resolved what, port 53 only                                  |

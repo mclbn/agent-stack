@@ -175,8 +175,9 @@ in
 
       # The client name rather than its address, resolved through unbound's
       # reverse records, so `grep demo` on this log yields that project's
-      # traffic.
-      logformat agents %ts.%03tu %6tr %>A %Ss/%03>Hs %<st %rm %ru %mt
+      # traffic. The time is local, as on L0, with the offset that tells apart
+      # the hour daylight saving time repeats; flow.log writes the same form.
+      logformat agents %{%Y-%m-%dT%H:%M:%S%z}tl %6tr %>A %Ss/%03>Hs %<st %rm %ru %mt
       # /var/log/squid is a symlink to /data/logs/squid; see logging.nix.
       access_log /var/log/squid/access.log agents
       cache_log /var/log/squid/cache.log

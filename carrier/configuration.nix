@@ -212,7 +212,10 @@
   # stratum 0 and a 1970 reference time forever. One address chrony can use
   # without asking anybody breaks the loop. The module writes `pool` for a
   # name and `server` for an address, which is what each of these wants.
-  time.timeZone = "UTC";
+  #
+  # The timezone is the site's, the sandboxes' too, so that every log and
+  # clock on L0, L1 and L2 reads the same.
+  time.timeZone = site.timezone;
   services.chrony = {
     enable = true;
     servers = site.ntp.addresses ++ site.ntp.pools;

@@ -31,7 +31,7 @@ fi
 # which is the one that will read it. tzdata comes in as a dependency of glibc.
 tz=${GUEST_TIMEZONE:-UTC}
 if [ ! -f "$BUILDROOT/usr/share/zoneinfo/$tz" ]; then
-    echo "timezone $tz: no /usr/share/zoneinfo/$tz in the image (guest.timezone in site.nix)" >&2
+    echo "timezone $tz: no /usr/share/zoneinfo/$tz in the image (timezone in site.nix)" >&2
     exit 1
 fi
 ln -sfn "../usr/share/zoneinfo/$tz" "$BUILDROOT/etc/localtime"

@@ -28,8 +28,10 @@
     # `nix run .#golden-update` moves it forward; leave this line in.
     snapshot = "2026/09/27";
 
-    # timezone = "Europe/Paris";
   };
+
+  # For L1 and the sandboxes alike; set it to L0's own.
+  # timezone = "Europe/Paris";
 
   # ---- Credentials, for the agents that need an API key --------------------
   # One entry per key: the variable the agent reads, and a command on this

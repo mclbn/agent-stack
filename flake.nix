@@ -310,7 +310,7 @@
               --profile ${site.guest.profile} \
               --environment VNC_GEOMETRY=${site.guest.vnc.geometry} \
               --environment VNC_DEPTH=${toString site.guest.vnc.depth} \
-              --environment GUEST_TIMEZONE=${site.guest.timezone} \
+              --environment GUEST_TIMEZONE=${site.timezone} \
               --snapshot "$SNAPSHOT" \
               --locale ${site.guest.locale} \
               --keymap ${site.guest.keymap} \
@@ -830,7 +830,7 @@
         in
         {
           # The settings as evaluated, defaults included:
-          #   nix eval .#site.guest.timezone
+          #   nix eval .#site.timezone
           inherit site;
 
 
