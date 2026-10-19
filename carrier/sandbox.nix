@@ -297,10 +297,10 @@ let
         unit=agent-fs-$project-$tag
         systemctl is-active --quiet "$unit" && continue
         install -d -m 0755 "$dir"
-        # The dotfiles are read-only here as on every other hop: the guest's
-        # ro mount is the guest's to undo, this flag is not.
+        # The config and the dotfiles are read-only here as on every other
+        # hop: the guest's ro mount is the guest's to undo, this flag is not.
         ro_flag=
-        [ "$tag" = dotfiles ] && ro_flag=--readonly
+        case $tag in config|dotfiles) ro_flag=--readonly ;; esac
         # virtiofsd runs as root: creating a file owned by uid 1000 needs
         # CAP_CHOWN, which is what makes uid 1000 end to end literally true.
         systemd-run --unit="$unit" --collect \

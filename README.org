@@ -2860,12 +2860,6 @@ arrangement exists for: that ~C-M-~ chords reach Emacs rather than the window
 manager, that the clipboard crosses in both directions, and that closing the
 viewer and reattaching finds the *same* frame rather than a second one.
 
-*~/etc/agent-config~ is read-only on the guest side only.* The image's fstab
-mounts it ~ro~, but ~agentctl~ serves it without ~--readonly~, so a root agent
-could remount it writable and rewrite its own project's copy, which ~agentctl~
-writes again at the next start. ~/etc/dotfiles~ is different: its virtiofsd
-refuses writes on both hops.
-
 *The Emacs package set is not pre-warmed*, so the first launch after a reset
 compiles. Fixing it means running Emacs inside the image during the build,
 which needs ~mkosi-chroot~, which the nixpkgs mkosi wrapper cannot run. The
