@@ -756,6 +756,26 @@ it prints on stderr is discarded: a command that prints a label before the key
 puts the label into the key. With ~source = "authinfo"~ the commands are
 ignored and the ~machine~ name is what finds the value.
 
+*** Add an external MCP server
+
+A hosted server such as Exa's: its key as a credential, and one declaration per
+agent in the dotfiles. The stack itself is not edited — see
+[[*External MCP servers][External MCP servers]].
+
+#+BEGIN_SRC sh
+$EDITOR site.nix                       # credentials.entries.EXA_API_KEY
+nix profile upgrade agent
+$EDITOR ~/agent-dotfiles/.config/claude-api/.claude.json
+$EDITOR ~/agent-dotfiles/.config/claude-pro/.claude.json
+$EDITOR ~/agent-dotfiles/.config/codex/config.toml
+$EDITOR ~/agent-dotfiles/.config/opencode/opencode.json
+jq . ~/agent-dotfiles/.config/claude-*/.claude.json ~/agent-dotfiles/.config/opencode/opencode.json >/dev/null
+agent reset demo
+#+END_SRC
+
+Check every JSON file before the reset: a malformed ~.claude.json~ costs the
+whole file, not just the server.
+
 *** Change L1 or sandbox sizing
 
 Memory and CPU are a deploy; the data disk is not — see
@@ -1565,12 +1585,17 @@ credentials, and attach inside tmux so a long run survives a dropped
 connection. ~emacs~ and ~vnc~ do the first two and then open the viewer.
 Dotfiles are deliberately not among them — see below.
 
-*Both Claude verbs pick up where you left off.* A new tmux session starts
-~claude --continue~, which reopens the latest conversation in ~/work~; when
-there is none — the first run, or the first run after ~agent reset~ — it exits
-at once and a new conversation starts instead. The fallback only fires on a
-quick failure, so a continued session that ends in an error after real work
-closes the pane rather than opening a fresh one. ~/clear~ inside Claude starts
+*Both Claude verbs pick up where you left off.* A new tmux session looks for
+a saved conversation — a ~.jsonl~ under ~$CLAUDE_CONFIG_DIR/projects/-work~ —
+and starts ~claude --continue~ if there is one, plain ~claude~ if not: the
+first run, or the first run after ~agent reset~. Looked for first rather than
+tried, because on a first run ~claude --continue~ goes through the whole setup
+wizard and only then exits with "No conversation found to continue", closing
+the pane. A session left without sending a message leaves no file, unless it
+ran a slash command such as ~/exit~, which is recorded and continues
+normally. A continued session that ends in an error closes the pane rather
+than opening a fresh one. The check relies on Claude Code's own file layout —
+see [[*Known gaps in what exists][Known gaps]]. ~/clear~ inside Claude starts
 a new conversation; ~/resume~ picks an older one. Reattaching to a session that
 is still running does neither: tmux just attaches.
 
@@ -2361,6 +2386,114 @@ What follows from that:
 ssh demo.agents.contained 'ls -l ~/.claude/skills ~/.config/claude-*/skills ~/.agents/skills/'
 #+END_SRC
 
+** External MCP servers
+
+A server someone else hosts, reached over HTTPS through Squid like any other
+web traffic, with an API key of yours. Unlike skills there is no shared
+format: each agent reads MCP servers from its own file, in its own dialect, so
+the server is declared once per agent. All of it is dotfiles and one
+credential; the stack is not edited.
+
+This is not a service stack, which is for servers you run. The table under
+[[*How agents reach it][How agents reach it]] puts servers holding credentials
+on L1 so the key stays out of the sandbox; a hosted server's key is in the
+sandbox exactly as the providers' keys already are, and gets the same
+treatment.
+
+Exa as the example, which takes its key in an ~x-api-key~ header.
+
+*The key*, an entry under ~credentials.entries~ in ~site.nix~ like any other —
+see [[*Adding a provider][Adding a provider]]:
+
+#+BEGIN_SRC nix
+credentials.entries.EXA_API_KEY = { machine = "api.exa.ai"; };   # plus command, with source = "command"
+#+END_SRC
+
+*Claude Code*, the same file twice: ~.config/claude-api/.claude.json~ and
+~.config/claude-pro/.claude.json~ in ~dotfilesRoot~.
+
+#+BEGIN_SRC json
+{
+  "mcpServers": {
+    "exa": {
+      "type": "http",
+      "url": "https://mcp.exa.ai/mcp",
+      "headersHelper": ". /run/creds/env; jq -n --arg k \"$EXA_API_KEY\" '{\"x-api-key\": $k}'"
+    }
+  }
+}
+#+END_SRC
+
+~.claude.json~ is where Claude keeps user-scope servers, and also its own state,
+which it adds to a seeded file and leaves the entry alone. The key comes from a
+~headersHelper~, a command Claude runs on each connection, rather than from
+~"x-api-key": "${EXA_API_KEY}"~: ~claude-pro~ does not source ~/run/creds/env~,
+since that would export ~ANTHROPIC_API_KEY~ and bill the API instead of the
+subscription, so the variable is not in its environment and Claude would send
+the text ~${EXA_API_KEY}~ as the key. The helper sources the file in its own
+shell, so nothing reaches the ~claude-pro~ process, and one file serves both
+modes.
+
+*Codex*, ~.config/codex/config.toml~ — under ~.config~, since the wrapper sets
+~CODEX_HOME~ there:
+
+#+BEGIN_SRC toml
+[mcp_servers.exa]
+url = "https://mcp.exa.ai/mcp"
+env_http_headers = { "x-api-key" = "EXA_API_KEY" }
+#+END_SRC
+
+*opencode*, an ~mcp~ block in ~.config/opencode/opencode.json~, beside the
+providers — see [[*opencode with a Zen or Go subscription][opencode with a Zen
+or Go subscription]]:
+
+#+BEGIN_SRC json
+"mcp": {
+  "exa": {
+    "type": "remote",
+    "url": "https://mcp.exa.ai/mcp",
+    "oauth": false,
+    "headers": { "x-api-key": "{env:EXA_API_KEY}" }
+  }
+}
+#+END_SRC
+
+~oauth: false~ keeps opencode from trying a browser sign-in first. Codex and
+opencode source ~/run/creds/env~ when they start, so both take the variable as
+it is.
+
+What follows from that:
+
+- *Only names reach the dotfiles.* Every sandbox can read them, and they hold
+  the variable and the helper, never the key.
+- *Seeded once, and only where nothing exists yet.* A file the image already
+  has wins, silently but for a ~keeping existing~ line in the seed journal.
+  None of these four is in the image today; ~~/.claude.json~ is, so ~claude~
+  run by hand from ~agent shell~ does not see the server.
+- *The agents own the files afterwards.* ~claude mcp remove~ removes the
+  server until the next ~reset~, and the same goes for Codex and opencode
+  editing their own configuration.
+- *A malformed ~.claude.json~ costs the whole file*, not just the server. Check
+  it with ~jq~ before a reset.
+- *A missing key fails quietly.* ~agent: no value for EXA_API_KEY~ at attach
+  is the only sign; the server then gets an empty key.
+- *Connected is not authenticated.* Exa also serves clients with no key, free
+  and rate-limited, and a dummy key connected in testing. Exa offers
+  ~agent_run~ only with a key, so its presence among the tools is the check,
+  along with usage appearing on the Exa dashboard.
+
+#+BEGIN_SRC sh
+ssh demo.agents.contained 'journalctl -u dotfiles-seed --no-pager | grep -E "claude.json|codex|opencode"'
+ssh demo.agents.contained 'grep -c ^EXA_API_KEY= /run/creds/env'
+#+END_SRC
+
+Then ~/mcp~ inside each agent.
+
+*Untested end to end.* Claude Code's half is proven: a seeded ~.claude.json~ is
+read as user scope and kept, and a local listener received the key from the
+helper with ~EXA_API_KEY~ unset, as in ~claude-pro~. The Codex and opencode
+blocks follow their documentation and have not been run.
+
 ** opencode with a Zen or Go subscription
 
 opencode's documented path for these is ~/connect~, which writes the key to
@@ -2756,6 +2889,26 @@ again.
 "this must run on an Arch host".* If the Ubuntu path works, that message is
 wrong and the preflight should name the missing binary instead of the
 distribution.
+
+*The Claude verbs read Claude Code's private file layout.* Whether to pass
+~--continue~ is decided by looking for ~$CLAUDE_CONFIG_DIR/projects/-work/*.jsonl~,
+which is how Claude Code 2.1.303 stores conversations, not a documented
+interface: it has no option to continue or else start fresh. Two ways it can
+go wrong:
+
+- *A file holding no conversation.* If the latest ~.jsonl~ carries only
+  settings records and no message, ~claude --continue~ prints "No conversation
+  found to continue" and exits — on every launch, not once, because the file
+  stays. It was produced only by deleting a running session's file under it;
+  quitting with ~/exit~, Ctrl+C, Ctrl+D or a dropped connection did not. The
+  way out is ~agent shell~, then deleting that file or running ~claude~ there.
+- *A change of layout in a later version.* If conversations move or are
+  renamed, the check finds nothing, and every launch starts a new conversation
+  instead of continuing; nothing is lost, ~/resume~ still finds them. Worth
+  checking after upgrading Claude Code.
+
+Before this, a ten-second timer stood in for the check, and failed on every
+first run, since the setup wizard alone takes longer.
 
 ** Not built yet
 

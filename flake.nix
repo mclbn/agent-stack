@@ -577,13 +577,15 @@
             }
 
             # Continue the latest conversation in /work, else start a new one.
-            # claude --continue exits 1 at once when there is nothing to continue
-            # (a first run, or the first run after a reset). The elapsed-time test
-            # confines the fallback to that case: a continued session that ends
-            # with an error after real work closes the pane as before, instead of
-            # dropping into a fresh conversation. No single quotes in here: it is
-            # spliced into a single-quoted remote command.
-            continue_or_new='t=$(date +%s); claude --continue || { [ $(( $(date +%s) - t )) -lt 10 ] && exec claude; }'
+            # Claude Code keeps each conversation as a .jsonl under
+            # $CLAUDE_CONFIG_DIR/projects/-work (the cwd, slashes turned to
+            # dashes). Checked first rather than falling back on failure: on a
+            # first run, or the first after a reset, claude --continue goes
+            # through the setup wizard and only then exits for want of a
+            # conversation, closing the pane. That layout is Claude Code's, not a
+            # documented interface; see Known gaps in the README. No single
+            # quotes in here: it is spliced into a single-quoted remote command.
+            continue_or_new='if ls $CLAUDE_CONFIG_DIR/projects/-work/*.jsonl >/dev/null 2>&1; then exec claude --continue; else exec claude; fi'
 
             # One skills folder for every agent. Codex and opencode read
             # ~/.agents/skills, seeded from the dotfiles; Claude Code reads only
