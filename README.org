@@ -2322,6 +2322,45 @@ Keys never go in these files. They arrive in ~/run/creds/env~ on tmpfs, and a
 config refers to them by name, so nothing secret is ever written to the
 dotfiles directory or to the overlay.
 
+** Skills
+
+One folder serves all four agents: ~.agents/skills~ in ~dotfilesRoot~, one
+sub-folder per skill with its ~SKILL.md~ inside, in the [[https://agentskills.io/specification][Agent Skills]]
+format.
+
+#+BEGIN_SRC sh
+mkdir -p ~/agent-dotfiles/.agents/skills/my-skill
+$EDITOR ~/agent-dotfiles/.agents/skills/my-skill/SKILL.md
+agent reset demo                       # existing sandboxes: take a fresh copy
+#+END_SRC
+
+Seeded like any other dotfile, it lands in ~~/.agents/skills~, which Codex and
+opencode read as it is. Claude Code reads only ~$CLAUDE_CONFIG_DIR/skills~, or
+~~/.claude/skills~ when that is unset, as with ~claude~ run by hand from
+~agent shell~. So ~agent shell~, ~claude-api~ and ~claude-pro~ link
+~~/.claude/skills~, ~~/.config/claude-api/skills~ and
+~~/.config/claude-pro/skills~ to ~~/.agents/skills~ when they start a session,
+each only if nothing is there yet. A link in ~dotfilesRoot~ would not do: it
+is ignored, see [[*The agent wrapper][The agent wrapper]]; these are made inside
+the sandbox and resolve there.
+
+What follows from that:
+
+- *One copy per sandbox, shared by its agents.* A skill an agent edits or
+  creates, Claude through its own skills folder included, is seen by the
+  others in that sandbox, never reaches L0, and is gone after ~reset~.
+- *A real folder wins.* A ~.config/claude-api/skills~ of your own in the
+  dotfiles, or one an agent made, is left alone, and that mode then sees only
+  what is in it.
+- *A sandbox seeded before ~.agents/skills~ existed* has dangling links until
+  its next ~reset~; Claude Code starts with no skills, without error.
+- *Emacs is not covered.* ~agent emacs~ makes no links, so ~claude~ started
+  from Emacs before any ~agent shell~ or Claude session sees no skills.
+
+#+BEGIN_SRC sh
+ssh demo.agents.contained 'ls -l ~/.claude/skills ~/.config/claude-*/skills ~/.agents/skills/'
+#+END_SRC
+
 ** opencode with a Zen or Go subscription
 
 opencode's documented path for these is ~/connect~, which writes the key to

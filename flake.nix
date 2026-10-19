@@ -585,6 +585,15 @@
             # spliced into a single-quoted remote command.
             continue_or_new='t=$(date +%s); claude --continue || { [ $(( $(date +%s) - t )) -lt 10 ] && exec claude; }'
 
+            # One skills folder for every agent. Codex and opencode read
+            # ~/.agents/skills, seeded from the dotfiles; Claude Code reads only
+            # $CLAUDE_CONFIG_DIR/skills, or ~/.claude/skills when it is unset, as
+            # from agent shell. Link all three to it. Made in the sandbox, so it
+            # resolves there, unlike a symlink in dotfilesRoot. A folder already
+            # in place, from the dotfiles or the agent, is left alone. No single
+            # quotes in here either.
+            link_skills='for d in .claude .config/claude-api .config/claude-pro; do mkdir -p $HOME/$d; [ -e $HOME/$d/skills ] || [ -L $HOME/$d/skills ] || ln -s $HOME/.agents/skills $HOME/$d/skills; done'
+
             # tmux in the sandbox, so a long agent run survives a dropped
             # connection and can be reattached.
             attach() {
@@ -663,7 +672,7 @@
               shell)
                 [ $# -eq 1 ] || usage
                 ensure_running "$1"; push_creds "$1"
-                attach "$1" shell "'exec \$SHELL -l'"
+                attach "$1" shell "'$link_skills; exec \$SHELL -l'"
                 ;;
               claude-api)
                 [ $# -eq 1 ] || usage
@@ -675,7 +684,7 @@
                 attach "$1" claude-api \
                   "'set -a; . /run/creds/env; set +a; \
                     export CLAUDE_CONFIG_DIR=\$HOME/.config/claude-api; \
-                    $continue_or_new'"
+                    $link_skills; $continue_or_new'"
                 ;;
               claude-pro)
                 [ $# -eq 1 ] || usage
@@ -684,7 +693,7 @@
                 # survive stop, but not reset: log in once per reset.
                 attach "$1" claude-pro \
                   "'export CLAUDE_CONFIG_DIR=\$HOME/.config/claude-pro; \
-                    $continue_or_new'"
+                    $link_skills; $continue_or_new'"
                 ;;
               codex)
                 [ $# -eq 1 ] || usage
