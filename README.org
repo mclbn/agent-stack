@@ -202,8 +202,8 @@ ps -o user= -p "$(pgrep -f 'guest=agent-l1' | head -1)"
 
 The domain also names its own virtiofsd binaries: two-line wrappers in the Nix
 store that run the flake's pinned virtiofsd, the one the sandboxes get on L1,
-with ~--inode-file-handles=never~, and for the dotfiles export with
-~--readonly~ as well. Both hops need the first flag: with file handles on L0, a
+with ~--inode-file-handles=never~, and for the dotfiles and agent tools exports
+with ~--readonly~ as well. Both hops need the first flag: with file handles on L0, a
 deleted file on L0's disk is freed at once and its inode number reused, while
 L1's virtiofsd, which tells files apart by inode number, may still refer to it;
 a sandbox then sees ~Bad file descriptor~ or ~Stale file handle~ under churn
@@ -211,8 +211,8 @@ such as git's. ~install~ and ~deploy~ keep the wrappers alive with one GC root
 each, ~/nix/var/nix/gcroots/agent-stack-virtiofsd~ and
 ~agent-stack-virtiofsd-readonly~ beside it, so ~nix-collect-garbage~ on L0 is
 safe. The ~ps~ line above should show a ~/nix/store/…-virtiofsd-…~ binary with
-~--inode-file-handles=never~ on both of L1's exports, and ~--readonly~ on the
-dotfiles one.
+~--inode-file-handles=never~ on all of L1's exports, and ~--readonly~ on the
+dotfiles and agent tools ones.
 
 ** Open questions on Ubuntu 24.04
 
@@ -315,11 +315,12 @@ sub-folder each, and is the only part of L0 that L1 can see.
 #+BEGIN_SRC sh
 mkdir -p ~/work/demo && chmod 700 ~/work     # demo: a project to start with
 mkdir -p ~/agent-dotfiles                    # copied into every new sandbox
+mkdir -p ~/agent-tools                       # copied into every project's agent-tools/
 ssh-keygen -t ed25519 -f ~/.ssh/agent-stack -C agent-stack
 cat ~/.ssh/agent-stack.pub                   # the line step 3 needs
 #+END_SRC
 
-*3. Edit ~site.nix~.* Replace the three values containing ~CHANGEME~, the whole
+*3. Edit ~site.nix~.* Replace the four values containing ~CHANGEME~, the whole
 quoted text each time, with your own. Keep the rest of the file: everything in
 it sits between its first ~{~ and its last ~}~.
 
@@ -327,6 +328,7 @@ it sits between its first ~{~ and its last ~}~.
 {
   exportRoot = "/home/alice/work";
   dotfilesRoot = "/home/alice/agent-dotfiles";
+  agentToolsRoot = "/home/alice/agent-tools";
   operatorSshKey = "ssh-ed25519 AAAAC3Nz... agent-stack";   # the whole line cat printed
   ...
 }
@@ -382,7 +384,7 @@ yours. Moving to a newer stack later is [[*Upgrade the stack][one command]].
 
 * Settings
 
-~site.nix~ lists every setting. The three required ones and ~guest.profile~
+~site.nix~ lists every setting. The four required ones and ~guest.profile~
 and ~guest.snapshot~ are set; every other line is commented out and shows the
 default, which applies as long as the line stays commented — a later version
 of the stack may change it. To change a setting, remove the ~#~ at the start
@@ -395,6 +397,7 @@ https://github.com/mclbn/agent-stack/blob/main/site/options.nix. A
 {
   exportRoot = "/home/alice/work";
   dotfilesRoot = "/home/alice/agent-dotfiles";
+  agentToolsRoot = "/home/alice/agent-tools";
   operatorSshKey = "ssh-ed25519 AAAAC3Nz... agent-stack";
 
   timezone = "Europe/Paris";              # L1 and the sandboxes, like L0
@@ -466,11 +469,14 @@ it; start them again with ~agent start~ once ~ssh l1 true~ answers.
 |                                                     | about fifteen seconds, no reboot and   |
 |                                                     | no image swap; ~deploy~ works too.     |
 |                                                     | See [[*Change how DNS is resolved][Change how DNS is resolved]].        |
-| ~exportRoot~, ~dotfilesRoot~, ~operatorSshKey~,     | ~nix run '.#deploy'~, which redefines  |
-| ~l1.memoryMiB~, ~l1.vcpu~, ~l1.cpuQuota~,           | the libvirt domain as well as          |
-| ~l1.cpuPeriod~, ~l1.systemDiskMiB~                  | replacing the system disk. Create a    |
-|                                                     | new ~exportRoot~ or ~dotfilesRoot~     |
-|                                                     | first: only ~install~ checks for it.   |
+| ~exportRoot~, ~dotfilesRoot~, ~agentToolsRoot~,     | ~nix run '.#deploy'~, which redefines  |
+| ~operatorSshKey~, ~l1.memoryMiB~, ~l1.vcpu~,        | the libvirt domain as well as          |
+| ~l1.cpuQuota~, ~l1.cpuPeriod~, ~l1.systemDiskMiB~   | replacing the system disk. Create a    |
+|                                                     | new ~exportRoot~, ~dotfilesRoot~ or    |
+|                                                     | ~agentToolsRoot~ first: only           |
+|                                                     | ~install~ checks for one, the export   |
+|                                                     | root, and a missing folder leaves L1   |
+|                                                     | stopped.                               |
 | ~guest.*~ — locale, keymap, profile,                | ~nix run '.#golden-build'~, then       |
 | snapshot, vnc, extraPackages, aurPackages,          | ~agent reset~ on each project, since   |
 | agentInstallers                                     | each one stays on the golden it was    |
@@ -689,6 +695,28 @@ ordinary writable file there. Nothing propagates back to L0, and a ~reset~
 discards it. The source cannot be changed from a sandbox at all: ~dotfilesRoot~
 reaches the sandboxes read-only at every hop, enforced by virtiofsd on L0 and
 on L1 rather than by a mount option a sandbox could undo.
+
+*** Add or update a general tool
+
+A tool in ~agentToolsRoot~ reaches a project's ~agent-tools/~ folder when a
+sandbox for it is created. List it in ~README.md~ there as well: agents use
+the tools their index lists — see [[*Agent tools][Agent tools]].
+
+#+BEGIN_SRC sh
+cp dedupe.py ~/agent-tools/ && $EDITOR ~/agent-tools/README.md   # the tool and its entry
+agent reset demo                                                  # copy it into demo now
+#+END_SRC
+
+A tool the project already has is never overwritten, so a newer version
+reaches it only once its copy there is deleted:
+
+#+BEGIN_SRC sh
+rm ~/work/demo/agent-tools/check_links.sh   # an agent's changes to it go too
+agent reset demo
+#+END_SRC
+
+~reset~ discards the sandbox's overlay as always, but not the project's files:
+the copies are in the project directory on L0.
 
 *** Change a setting in site.nix
 
@@ -1073,7 +1101,8 @@ Which of the last three a version needs is in the stack's history on GitHub,
 https://github.com/mclbn/agent-stack/commits. When in doubt run all three:
 none touches ~/data~ or your workspaces, though the resets after
 ~golden-build~ discard what each sandbox installed. A setting the new version
-removed fails at ~deploy~, the first command to read ~site.nix~, naming it; one
+removed, or a required one it added such as ~agentToolsRoot~, fails at
+~deploy~, the first command to read ~site.nix~, naming it; one
 it renamed still works and prints a warning with the new name, which is the
 moment to change ~site.nix~. To go back, copy ~flake.lock.previous~ over
 ~flake.lock~ and run the same commands again.
@@ -1160,8 +1189,9 @@ down, which takes the logs with it, starts the count again.
 *** Tear the whole thing down
 
 *This destroys the carrier, every sandbox, and all the logs and state on
-~/data~.* Your projects and dotfiles are untouched: they live on L0 and were
-only ever mounted in. Work top-down — each step assumes the one above it.
+~/data~.* Your projects, dotfiles and agent tools are untouched: they live on
+L0 and were only ever mounted in. Work top-down — each step assumes the one
+above it.
 
 #+BEGIN_SRC sh
 # 1. the sandboxes, while L1 is still up
@@ -1548,9 +1578,9 @@ One command per thing you actually want to do, run on L0. Install it once:
 nix profile install '.#agent'
 #+END_SRC
 
-~dotfilesRoot~ was set in Quickstart step 3. Changing it later takes
-~nix run '.#deploy'~, since it is part of L1's domain, and then ~agent reset~
-for a project to take a fresh copy.
+~dotfilesRoot~ and ~agentToolsRoot~ were set in Quickstart step 3. Changing
+either later takes ~nix run '.#deploy'~, since both are part of L1's domain,
+and then ~agent reset~ for a project to copy from the new one.
 
 | Command                         | Effect                                                         |
 |---------------------------------+----------------------------------------------------------------|
@@ -1583,7 +1613,7 @@ Every terminal command — ~shell~, the two Claude verbs, ~codex~, ~opencode~ �
 does the same three things: ensure the sandbox exists and runs, push
 credentials, and attach inside tmux so a long run survives a dropped
 connection. ~emacs~ and ~vnc~ do the first two and then open the viewer.
-Dotfiles are deliberately not among them — see below.
+Dotfiles and agent tools are deliberately not among them — see below.
 
 *Both Claude verbs pick up where you left off.* A new tmux session looks for
 a saved conversation — a ~.jsonl~ under ~$CLAUDE_CONFIG_DIR/projects/-work~ —
@@ -1687,6 +1717,43 @@ ssh demo.agents.contained 'ls -l ~/ | head'   # dotfiles, as ordinary files
 ssh l1 'findmnt /srv/dotfiles'         # the L0 export reached L1, ro
 ssh demo.agents.contained 'sudo mount -o remount,rw /etc/dotfiles; sudo touch /etc/dotfiles/x'   # refused
 agent stop demo && agent shell demo    # creds gone after stop, pushed again
+#+END_SRC
+
+*** Agent tools
+
+~agentToolsRoot~ is a directory on L0 — ~~/agent-tools~ in the Quickstart —
+holding the helper tools every project should have: the scripts agents write
+for their own use and that are worth keeping beyond one project. It reaches
+every sandbox at ~/etc/agent-tools~ the way the dotfiles do, read-only at
+every hop, and ~agent-tools-seed.service~ copies it into ~/work/agent-tools~
+the first time the sandbox boots.
+
+One difference from the dotfiles changes the rules: ~/work~ is the project's
+own directory on L0, not the overlay. The copies land in
+~~/work/<project>/agent-tools~ on L0, appear in ~git status~ when the project
+is a git repository, and survive ~agent reset~. A reset still makes the next
+boot copy again, but a file already there is kept, whether it is an earlier
+copy, a tool an agent fixed in place or a project tool of the same name. A
+reset therefore brings the tools added since, not newer versions of those
+already there — see [[*Add or update a general tool][Add or update a general
+tool]].
+
+The index is the exception. Agents use the tools their ~README.md~ lists, and
+a project's own ~README.md~ is theirs to maintain, so ~README.md~ in
+~agentToolsRoot~ is copied as ~README-general.md~ instead, and replaced at
+every copy. The project's ~README.md~ gets one line, added once, telling
+agents to read ~README-general.md~ too; it is created with that line if the
+project has none. Neither file mentions the stack: the agents reading them
+need not know where the tools come from.
+
+Symlinks are ignored and named in the journal, as in the dotfiles, and
+~.git/~ is skipped. Nothing is copied while ~/work~ or ~/etc/agent-tools~ is
+not mounted or the source is empty; the next boot tries again.
+
+#+BEGIN_SRC sh
+ssh demo.agents.contained 'journalctl -u agent-tools-seed'   # copied, kept, ignored
+ssh l1 'findmnt /srv/agent-tools'                            # the L0 export reached L1, ro
+ls ~/work/demo/agent-tools                                   # the copies, on L0
 #+END_SRC
 
 * Network policy

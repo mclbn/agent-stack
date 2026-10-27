@@ -9,13 +9,16 @@
 #   https://github.com/mclbn/agent-stack/blob/main/site/options.nix
 # A misspelt name or a wrong value fails with an error naming it.
 {
-  # ---- Required: replace the three CHANGEME values ---------------------------
+  # ---- Required: replace the four CHANGEME values ----------------------------
 
   # The folder holding your projects, one sub-folder each. Mode 0700.
   exportRoot = "/home/CHANGEME/work";
 
   # Configuration files copied into the home of every new sandbox.
   dotfilesRoot = "/home/CHANGEME/agent-dotfiles";
+
+  # Helper tools copied into agent-tools/ of every project, in each new sandbox.
+  agentToolsRoot = "/home/CHANGEME/agent-tools";
 
   # The stack's public ssh key, the whole line: cat ~/.ssh/agent-stack.pub
   operatorSshKey = "ssh-ed25519 CHANGEME agent-stack";

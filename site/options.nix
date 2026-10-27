@@ -1,9 +1,9 @@
 # Every site setting: its type, its default, and what it does.
 #
 # This file is the reference; your own site.nix sets only what differs from it.
-# Three settings have no default and must be set there: exportRoot,
-# dotfilesRoot and operatorSshKey. A list you set replaces the default list
-# rather than adding to it.
+# Four settings have no default and must be set there: exportRoot,
+# dotfilesRoot, agentToolsRoot and operatorSshKey. A list you set replaces the
+# default list rather than adding to it.
 #
 # A misspelt name or a value of the wrong type fails at evaluation, naming the
 # setting, rather than at boot.
@@ -476,6 +476,34 @@ in
         resolves it against its own filesystem, where L0's paths do not
         exist. Keep real files here, or point this at the tree the links lead
         to.
+      '';
+    };
+
+    # ---------------------------------------------------------- agent tools --
+    agentToolsRoot = mkOption {
+      type = edited absolutePath;
+      example = "/home/alice/agent-tools";
+      description = ''
+        A directory on L0 holding the helper tools every project should have.
+        Exported and re-exported read-only like dotfilesRoot, and *copied*
+        into agent-tools/ in the project's own directory when a sandbox is
+        created: /work/agent-tools in the sandbox, under exportRoot on L0.
+
+        Copied once per sandbox, like the dotfiles, so again after
+        `agent reset`. But the destination is not on the overlay: the copies
+        land in the project directory on L0 and survive the reset. A later
+        copy therefore adds only what is missing. A file already there is
+        kept, whether it came from an earlier copy or an agent changed it, so
+        an improved tool reaches a project only once its copy there has been
+        deleted.
+
+        README.md here, the index of the tools, is the exception. It is
+        copied as README-general.md, replaced at every copy, and the
+        project's own agent-tools/README.md gets one line pointing to it, so
+        that agents find these tools beside the project's own.
+
+        Symlinks are ignored and named in the sandbox's journal, for the
+        reason given under dotfilesRoot.
       '';
     };
 

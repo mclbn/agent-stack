@@ -74,6 +74,8 @@ let
       -device vhost-user-fs-pci,chardev=fsconfig,tag=config \
       -chardev socket,id=fsdotfiles,path="$run/dotfiles.sock" \
       -device vhost-user-fs-pci,chardev=fsdotfiles,tag=dotfiles \
+      -chardev socket,id=fsagenttools,path="$run/agent-tools.sock" \
+      -device vhost-user-fs-pci,chardev=fsagenttools,tag=agent-tools \
       -netdev tap,id=net0,ifname="$tap",script=no,downscript=no \
       -device virtio-net-pci,netdev=net0,mac="$mac" \
       -device virtio-rng-pci \
@@ -291,16 +293,17 @@ let
       project=$1
       run=/run/agent/$project
       for pair in "work:$EXPORT_ROOT/$project" "config:/data/config/$project" \
-                  "dotfiles:/srv/dotfiles"; do
+                  "dotfiles:/srv/dotfiles" "agent-tools:/srv/agent-tools"; do
         tag=$(echo "$pair" | cut -d: -f1)
         dir=$(echo "$pair" | cut -d: -f2)
         unit=agent-fs-$project-$tag
         systemctl is-active --quiet "$unit" && continue
         install -d -m 0755 "$dir"
-        # The config and the dotfiles are read-only here as on every other
-        # hop: the guest's ro mount is the guest's to undo, this flag is not.
+        # The config, the dotfiles and the agent tools are read-only here as on
+        # every other hop: the guest's ro mount is the guest's to undo, this
+        # flag is not.
         ro_flag=
-        case $tag in config|dotfiles) ro_flag=--readonly ;; esac
+        case $tag in config|dotfiles|agent-tools) ro_flag=--readonly ;; esac
         # virtiofsd runs as root: creating a file owned by uid 1000 needs
         # CAP_CHOWN, which is what makes uid 1000 end to end literally true.
         systemd-run --unit="$unit" --collect \
@@ -323,7 +326,7 @@ let
 
     stop_virtiofsd() {
       project=$1
-      for tag in work config dotfiles; do
+      for tag in work config dotfiles agent-tools; do
         systemctl stop "agent-fs-$project-$tag" 2>/dev/null || true
       done
     }

@@ -137,6 +137,17 @@
     ];
   };
 
+  # The agent tools directory from L0, re-exported into every sandbox and
+  # read-only at every hop, exactly as the dotfiles above.
+  fileSystems."/srv/agent-tools" = {
+    device = "agent-tools"; # virtiofs tag, set in the domain XML
+    fsType = "virtiofs";
+    options = [
+      "ro"
+      "nofail"
+    ];
+  };
+
   # The export root, re-exported per project into sandboxes in a later slice.
   # nofail: a missing virtiofs tag must not stop the carrier from booting.
   fileSystems."/srv/projects" = {

@@ -1,0 +1,118 @@
+#!/bin/bash
+# Copy the agent tools from the read-only mount into the project's
+# agent-tools/ folder, once per sandbox.
+#
+# The same pattern as dotfiles-seed, with one difference that changes the
+# rules: the destination is /work, the project's own directory on L0, not the
+# overlay. The marker is on the overlay, so `agent reset` runs this again, but
+# what it copied the last time is still there. Hence:
+#
+# - A file already in place is kept, never overwritten. It may be an earlier
+#   copy, a tool an agent fixed in place, or a project tool of the same name;
+#   telling them apart would take a record of what was copied.
+# - README.md, the index of the tools, is copied as README-general.md and
+#   replaced every time, since it belongs to the source and not to the
+#   project. The project's own README.md, which agents keep, gets one line
+#   pointing to it. That line names nothing of this stack: the agents reading
+#   it need not know where the tools come from.
+#
+# Only what this script creates is chowned to agent: the rest of /work is the
+# project's, not this script's to touch.
+#
+# Symlinks in agentToolsRoot are ignored, and reported, for the reason given
+# in dotfiles-seed.
+set -euo pipefail
+
+src=/etc/agent-tools
+dest=/work/agent-tools
+marker=/var/lib/agent-tools/seeded
+pointer='Also read README-general.md: it lists general-purpose tools shared across projects. Do not edit it.'
+
+# Checked by the unit's ConditionPathExists as well; repeated here so that a
+# run by hand says why it does nothing.
+if [ -e "$marker" ]; then
+    echo "already seeded on $(cat "$marker" 2>/dev/null); nothing to do"
+    echo "to seed again: rm $marker && systemctl start agent-tools-seed.service"
+    exit 0
+fi
+
+# Both mounts are nofail. Without /work, the copies would land in the empty
+# directory on the overlay, where nobody would look for them. No marker on
+# these paths, so the next boot tries again.
+for mount in "$src" /work; do
+    if ! mountpoint -q "$mount"; then
+        echo "$mount is not mounted; not seeding, will retry on next boot"
+        exit 0
+    fi
+done
+if [ -z "$(ls -A "$src")" ]; then
+    echo "nothing in $src; not seeding, will retry on next boot"
+    exit 0
+fi
+
+# Created owned by agent, parents first; directories already there are left
+# as they are.
+make_dir() {
+    [ -d "$1" ] && return 0
+    make_dir "$(dirname "$1")"
+    mkdir "$1"
+    chown agent:agent "$1"
+}
+
+copied=0
+kept=0
+ignored=0
+
+while IFS= read -r link; do
+    echo "ignoring symlink ${link#./} -> $(readlink "$src/${link#./}")"
+    ignored=$((ignored + 1))
+done < <(cd "$src" && find . -type l -not -path './.git/*' -print)
+
+make_dir "$dest"
+while IFS= read -r found; do
+    rel=${found#./}
+    # The index, copied under its own name below.
+    [ "$rel" = README.md ] && continue
+    target=$dest/$rel
+    make_dir "$(dirname "$target")"
+    # -L as well: a link there, even a dangling one, is the project's.
+    if [ -e "$target" ] || [ -L "$target" ]; then
+        echo "keeping existing $target"
+        kept=$((kept + 1))
+        continue
+    fi
+    cp --preserve=mode,timestamps "$src/$rel" "$target"
+    chown agent:agent "$target"
+    copied=$((copied + 1))
+done < <(cd "$src" && find . -type f -not -path './.git/*' -print)
+
+if [ -f "$src/README.md" ] && [ ! -L "$src/README.md" ]; then
+    general=$dest/README-general.md
+    # Through a temporary file, so that an interrupted copy leaves the
+    # previous one whole.
+    cp --preserve=mode,timestamps "$src/README.md" "$general.tmp"
+    chown agent:agent "$general.tmp"
+    mv -fT "$general.tmp" "$general"
+    echo "index copied as $general"
+
+    index=$dest/README.md
+    if ! grep -qF README-general.md "$index" 2>/dev/null; then
+        # A new index starts as the agent-tools skill's template does, so that
+        # agents extend it in the form they expect.
+        if [ ! -e "$index" ]; then
+            printf '%s\n' '# Agent tools' '' \
+                'Helper tools kept by agents for this project. Read this file before writing a script.' \
+                "Each tool's header gives its full usage." >"$index"
+            chown agent:agent "$index"
+        fi
+        printf '\n%s\n' "$pointer" >>"$index"
+        echo "pointer to README-general.md added to $index"
+    fi
+fi
+
+# Last, and only now: everything above succeeded.
+mkdir -p "$(dirname "$marker")"
+date -Is >"$marker"
+
+printf 'seeded %s from %s: %d copied, %d kept, %d symlink(s) ignored\n' \
+       "$dest" "$src" "$copied" "$kept" "$ignored"

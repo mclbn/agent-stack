@@ -102,6 +102,16 @@
         <target dir='dotfiles'/>
       </filesystem>
 
+      <!-- Helper tools for every project, copied into its workspace by each
+           new sandbox. Shared by every project and read-only, like the
+           dotfiles. -->
+      <filesystem type='mount' accessmode='passthrough'>
+        <driver type='virtiofs'/>
+        <binary path='${virtiofsdReadonlyWrapper}'/>
+        <source dir='${site.agentToolsRoot}'/>
+        <target dir='agent-tools'/>
+      </filesystem>
+
       <interface type='network'>
         <source network='${site.networkName}'/>
         <model type='virtio'/>

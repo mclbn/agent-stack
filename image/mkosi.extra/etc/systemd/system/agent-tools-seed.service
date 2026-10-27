@@ -1,0 +1,19 @@
+[Unit]
+Description=Copy the agent tools into the project's agent-tools/, once
+# Both mounts are virtiofs and nofail, so either may be absent; the script
+# checks for them rather than the unit failing.
+After=etc-agent-tools.mount work.mount local-fs.target
+Wants=etc-agent-tools.mount
+Before=multi-user.target
+# Once per sandbox: the marker is on the overlay, so `agent reset` removes it
+# and the next boot copies again. The copies themselves are in /work, on L0,
+# and survive the reset; the script says what that changes.
+ConditionPathExists=!/var/lib/agent-tools/seeded
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/agent-tools-seed
+
+[Install]
+WantedBy=multi-user.target

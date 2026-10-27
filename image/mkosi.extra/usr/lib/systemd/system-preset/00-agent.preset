@@ -10,6 +10,7 @@ enable chronyd.service
 enable systemd-networkd.service
 enable agent-identity.service
 enable dotfiles-seed.service
+enable agent-tools-seed.service
 enable pacman-init.service
 enable docker.service
 

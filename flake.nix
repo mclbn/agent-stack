@@ -42,8 +42,8 @@
           virtiofsdWrapper = pkgs.writeShellScript "virtiofsd-no-file-handles" ''
             exec ${pkgs.virtiofsd}/bin/virtiofsd --inode-file-handles=never "$@"
           '';
-          # The same, refusing every write, for the dotfiles: libvirt has no
-          # read-only setting for a virtiofs share either.
+          # The same, refusing every write, for the dotfiles and the agent
+          # tools: libvirt has no read-only setting for a virtiofs share either.
           virtiofsdReadonlyWrapper = pkgs.writeShellScript "virtiofsd-no-file-handles-readonly" ''
             exec ${pkgs.virtiofsd}/bin/virtiofsd --inode-file-handles=never --readonly "$@"
           '';
@@ -917,7 +917,7 @@
         welcomeText = ''
           Created flake.nix (leave it as it is) and site.nix (yours).
 
-          Next: replace the three CHANGEME values in site.nix, as the README's
+          Next: replace the four CHANGEME values in site.nix, as the README's
           Quickstart describes.
         '';
       };
@@ -933,6 +933,7 @@
                 {
                   exportRoot = "/home/check/agent-work";
                   dotfilesRoot = "/home/check/agent-dotfiles";
+                  agentToolsRoot = "/home/check/agent-tools";
                   operatorSshKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIcheck check";
                 }
               ];

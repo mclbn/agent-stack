@@ -4,3 +4,4 @@
 work            /work               virtiofs  nofail                0 0
 config          /etc/agent-config   virtiofs  ro,nofail             0 0
 dotfiles        /etc/dotfiles       virtiofs  ro,nofail             0 0
+agent-tools     /etc/agent-tools    virtiofs  ro,nofail             0 0
