@@ -58,7 +58,7 @@
     # agentInstallers = [
     #   "https://claude.ai/install.sh"
     #   "https://chatgpt.com/codex/install.sh"
-    #   "https://opencode.ai/install"
+    #   "https://opencode.ai/v2/install"
     # ];
 
     # The VNC desktop, full profile only.

@@ -719,15 +719,23 @@
                 # its own subscription through OPENCODE_API_KEY and direct
                 # Anthropic access through ANTHROPIC_API_KEY, and lists both at
                 # once. Through the environment rather than `opencode auth login`,
-                # which writes to auth.json on the overlay where it survives stop.
+                # which saves the key in opencode's database on the overlay, where
+                # it survives stop.
+                # --standalone on every call: by default opencode hands the work to
+                # one shared background server, which keeps the environment of
+                # whichever client started it and outlives this session. A private
+                # server is a child of this one, takes the keys just sourced, and
+                # exits with it. opencode 1 has no such flag and refuses it.
                 # --continue only when there is a session to continue: with none,
-                # opencode still starts, but shows a server error before falling
-                # back to its start screen. `session list` prints nothing when the
-                # project has no session; if it fails, the plain start is taken.
+                # opencode 1 showed a server error before falling back to its start
+                # screen, and opencode 2 has not been tried. `session list` prints
+                # nothing when the project has no session; if it fails, the plain
+                # start is taken.
                 attach "$1" opencode \
                   "'set -a; . /run/creds/env; set +a; \
-                    if [ -n \"\$(opencode session list -n 1 2>/dev/null)\" ]; \
-                    then exec opencode --continue; else exec opencode; fi'"
+                    if [ -n \"\$(opencode session list --standalone -n 1 2>/dev/null)\" ]; \
+                    then exec opencode --standalone --continue; \
+                    else exec opencode --standalone; fi'"
                 ;;
               vnc)
                 [ $# -eq 1 ] || usage

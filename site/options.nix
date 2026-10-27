@@ -394,7 +394,7 @@ in
         default = [
           "https://claude.ai/install.sh"
           "https://chatgpt.com/codex/install.sh"
-          "https://opencode.ai/install"
+          "https://opencode.ai/v2/install"
         ];
         description = ''
           Agents, installed with their vendors' own installer scripts. Each is

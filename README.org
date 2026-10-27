@@ -1590,8 +1590,8 @@ and then ~agent reset~ for a project to copy from the new one.
 |                                 | reset; continues the last conversation in ~/work~              |
 | ~agent codex <project>~         | Codex CLI with the API key from tmpfs, ~CODEX_HOME~ on the     |
 |                                 | overlay; resumes the last session in ~/work~                   |
-| ~agent opencode <project>~      | opencode, keys through the environment rather than             |
-|                                 | ~auth.json~; continues the last session                        |
+| ~agent opencode <project>~      | opencode on a private server, keys through the environment     |
+|                                 | rather than a saved login; continues the last session          |
 | ~agent emacs <project>~         | ~emacsclient~ over VNC; needs the ~full~ profile               |
 | ~agent vnc <project>~           | just the viewer on the sandbox's display; ~full~ only          |
 | ~agent shell <project>~         | a plain shell                                                  |
@@ -1631,8 +1631,11 @@ is still running does neither: tmux just attaches.
 
 ~codex~ does the same with ~codex resume --last~, which starts fresh on its own
 when there is nothing to reopen. ~opencode~ asks ~opencode session list~ first
-and passes ~--continue~ only when a session exists: with none, ~--continue~
-shows a server error before reaching the start screen.
+and passes ~--continue~ only when a session exists: with none, opencode 1
+showed a server error before reaching the start screen, and opencode 2 has not
+been tried. Every call carries ~--standalone~, which gives the session a private
+server of its own rather than opencode's shared background server — see
+[[*Known gaps in what exists][Known gaps]] for why.
 
 *Dotfiles.* ~dotfilesRoot~ is a directory on L0 — ~~/agent-dotfiles~ in the
 Quickstart — exported to L1 by virtiofs and re-exported into every sandbox at
@@ -2516,18 +2519,21 @@ or Go subscription]]:
 
 #+BEGIN_SRC json
 "mcp": {
-  "exa": {
-    "type": "remote",
-    "url": "https://mcp.exa.ai/mcp",
-    "oauth": false,
-    "headers": { "x-api-key": "{env:EXA_API_KEY}" }
+  "servers": {
+    "exa": {
+      "type": "remote",
+      "url": "https://mcp.exa.ai/mcp",
+      "oauth": false,
+      "headers": { "x-api-key": "{env:EXA_API_KEY}" }
+    }
   }
 }
 #+END_SRC
 
 ~oauth: false~ keeps opencode from trying a browser sign-in first. Codex and
 opencode source ~/run/creds/env~ when they start, so both take the variable as
-it is.
+it is. A block written for opencode 1, with ~exa~ directly under ~mcp~, is
+still read.
 
 What follows from that:
 
@@ -2559,13 +2565,17 @@ Then ~/mcp~ inside each agent.
 *Untested end to end.* Claude Code's half is proven: a seeded ~.claude.json~ is
 read as user scope and kept, and a local listener received the key from the
 helper with ~EXA_API_KEY~ unset, as in ~claude-pro~. The Codex and opencode
-blocks follow their documentation and have not been run.
+blocks follow their documentation and have not been run. For opencode the
+~agent_run~ check may not hold as written: by default it exposes MCP tools
+through its "Code Mode" rather than one by one, and what ~/mcps~ shows then
+has not been looked at.
 
 ** opencode with a Zen or Go subscription
 
-opencode's documented path for these is ~/connect~, which writes the key to
-~~/.local/share/opencode/auth.json~ — on the overlay, surviving ~stop~ and
-clearing only at ~reset~, which is what the credential model exists to avoid.
+opencode's documented path for these is ~/connect~, which saves the key in
+opencode's database, ~~/.local/share/opencode/opencode.db~ — on the overlay,
+surviving ~stop~ and clearing only at ~reset~, which is what the credential
+model exists to avoid.
 Reference the environment variable instead, which opencode supports directly:
 
 #+BEGIN_SRC sh
@@ -2573,14 +2583,17 @@ mkdir -p ~/agent-dotfiles/.config/opencode
 cat > ~/agent-dotfiles/.config/opencode/opencode.json <<'EOF'
 {
   "$schema": "https://opencode.ai/config.json",
-  "provider": {
-    "opencode-go": { "options": { "apiKey": "{env:OPENCODE_API_KEY}" } },
-    "opencode":    { "options": { "apiKey": "{env:OPENCODE_API_KEY}" } }
+  "providers": {
+    "opencode-go": { "settings": { "apiKey": "{env:OPENCODE_API_KEY}" } },
+    "opencode":    { "settings": { "apiKey": "{env:OPENCODE_API_KEY}" } }
   },
   "model": "opencode-go/kimi-k3"
 }
 EOF
 #+END_SRC
+
+A file written for opencode 1, with ~provider~ and ~options~ in place of
+~providers~ and ~settings~, is still read.
 
 Zen and Go are *separate providers* sharing one key: Zen models are
 ~opencode/<id>~ and Go models ~opencode-go/<id>~. Declaring only one shows only
@@ -2970,6 +2983,17 @@ go wrong:
 
 Before this, a ten-second timer stood in for the check, and failed on every
 first run, since the setup wizard alone takes longer.
+
+*opencode run by hand starts a shared server without the keys.* opencode
+normally hands its work to one background server per user, started by
+whichever client comes first. It inherits that client's environment, is
+detached, and runs until it is stopped or the sandbox is. ~agent opencode~
+stays clear of it with ~--standalone~, but ~opencode~ typed in ~agent shell~
+starts the shared one, without the keys, since ~agent shell~ does not source
+~/run/creds/env~. ~agent opencode~ never connects to it, so it only sits idle;
+~opencode service stop~ ends it. The documented way to give it keys,
+~opencode service set env~, writes them to ~~/.config/opencode/service.json~
+on the overlay, which is why it is not used.
 
 ** Not built yet
 
