@@ -463,9 +463,8 @@ it; start them again with ~agent start~ once ~ssh l1 true~ answers.
 |                                                     | rebuilds; the new value appears at the |
 |                                                     | next attach.                           |
 | ~logging.*~, ~serviceStacks~,                       | ~nix run '.#deploy'~                   |
-| ~sandbox.memoryMiB~, ~sandbox.vcpu~,                |                                        |
-| ~carrier.extraModules~                              |                                        |
-| ~dns.*~, ~ntp.*~                                    | ~nixos-rebuild … switch~ — in place,   |
+| ~sandbox.memoryMiB~, ~sandbox.vcpu~                 |                                        |
+| ~dns.*~, ~ntp.*~, ~carrier.extraModules~            | ~nixos-rebuild … switch~ — in place,   |
 |                                                     | about fifteen seconds, no reboot and   |
 |                                                     | no image swap; ~deploy~ works too.     |
 |                                                     | See [[*Change how DNS is resolved][Change how DNS is resolved]].        |
@@ -728,8 +727,8 @@ to re-run]].
 $EDITOR site.nix
 
 nix profile upgrade agent              # credentials.*
-nix run '.#deploy'                     # logging, serviceStacks, sizing, paths, extraModules
-nix run 'nixpkgs#nixos-rebuild' -- switch --flake '.#agentvm' --target-host root@l1   # dns.*, ntp.*
+nix run '.#deploy'                     # logging, serviceStacks, sizing, paths
+nix run 'nixpkgs#nixos-rebuild' -- switch --flake '.#agentvm' --target-host root@l1   # dns.*, ntp.*, extraModules
 nix run '.#golden-build'               # anything under guest.*, then agent reset per project
 #+END_SRC
 
@@ -1045,6 +1044,22 @@ rules.
 Taps and QEMU processes belong to ~agentctl~, not to the firewall module, so
 reloading the ruleset leaves running sandboxes alone — but a change to Squid or
 unbound restarts that service and drops proxied connections in flight.
+
+*** Restrict a sandbox's network
+
+For a sandbox you trust less than the others: L1's DNS for internal names
+only, the L1 services and outside destinations you list, and nothing else. A
+module in your site folder, applied in place, with the sandbox left running —
+see [[*Restricting a sandbox][Restricting a sandbox]].
+
+#+BEGIN_SRC sh
+curl -fsSLO https://raw.githubusercontent.com/mclbn/agent-stack/main/examples/carrier-restricted.nix
+ssh l1 'jq -r "[.project, .index] | @tsv" /data/state/alloc.jsonl'
+$EDITOR carrier-restricted.nix         # the three lists at the top
+$EDITOR site.nix                       # carrier.extraModules = [ ./carrier-restricted.nix ];
+nix run 'nixpkgs#nixos-rebuild' -- test --flake '.#agentvm' --target-host root@l1
+# once the checks pass: the same with switch
+#+END_SRC
 
 *** Read the logs
 
@@ -1862,7 +1877,9 @@ container range but not the private ranges a LAN uses. So a sandbox can reach
 a web server on L0 at 10.99.0.1, or on any address of L0 that answers on 80 or
 443, and every port of your LAN — router, NAS, L0's own LAN address. All of it
 is logged; none of it is refused. Until that changes, keep nothing listening on
-L0 or on the LAN that a sandbox should not reach.
+L0 or on the LAN that a sandbox should not reach. For a sandbox you trust less
+than the others, [[*Restricting a sandbox][Restricting a sandbox]] closes all
+of it, and the internet with it.
 
 In the other direction:
 
@@ -1875,6 +1892,138 @@ In the other direction:
 |                  |                        | filtered                                              |
 | the containers   | the internet           | allowed; each other, between stacks, too — see        |
 |                  |                        | [[*Known gaps in what exists][Known gaps in what exists]]                             |
+
+** Restricting a sandbox
+
+For a sandbox you trust less than the others — one running a pentest, or code
+you have not read — ~examples/carrier-restricted.nix~ replaces the table above
+with an allow-list. It is a module for your site folder, listed in
+~carrier.extraModules~: the stack is unchanged, and so is every sandbox the
+module does not name.
+
+| From a restricted sandbox, to         | Result                                        |
+|---------------------------------------+-----------------------------------------------|
+| L1: DNS                               | internal names only — sandboxes, services and |
+|                                       | reverse records; any other name is refused    |
+| L1: NTP, ping                         | allowed                                       |
+| L1: the services you list             | allowed                                       |
+| L1: any other port, Squid's included  | refused                                       |
+| the destinations you list             | allowed: one address and TCP port each        |
+| anything else — the internet, your    | refused, and logged as ~segment-deny~         |
+| LAN, L0, other sandboxes, 80 and 443  |                                               |
+| included                              |                                               |
+
+*It filters before Squid sees anything.* The rules are a chain of their own on
+the prerouting hook, ahead of the redirect to Squid, so web traffic meets the
+same allow-list as every other port. A drop there is final and an accept only
+ends that chain, so the module can take access away but never add any.
+
+*DNS is restricted in unbound, not in the firewall.* Each restricted address
+gets ~refuse_non_local~ in unbound's ~access-control~: unbound answers from its
+local data and refuses the rest, so no lookup leaves L1 on the sandbox's
+behalf, and a public name fails at once instead of timing out. Without it, DNS
+would be a way out: a program can hide data in the names it looks up, and the
+lookups reach a name server its author chose.
+
+*Two more rules hold it together.* The first drops a packet whose source
+address is not the one its tap was given, because unbound tells sandboxes apart
+by address. NixOS's reverse-path filter on L1 already does this; the rule keeps
+the module from depending on it. The second accepts replies to connections L1
+opens, which is what keeps ~ssh~ and ~agent attach~ working.
+
+*** Setting it up
+
+Everything runs from your site folder, and the sandbox can stay up throughout.
+It must have been started once, which is when it is given its index.
+
+#+BEGIN_SRC sh
+curl -fsSLO https://raw.githubusercontent.com/mclbn/agent-stack/main/examples/carrier-restricted.nix
+ssh l1 'jq -r "[.project, .index] | @tsv" /data/state/alloc.jsonl'   # every project's index
+$EDITOR carrier-restricted.nix         # the three lists at the top
+$EDITOR site.nix                       # carrier.extraModules = [ ./carrier-restricted.nix ];
+
+# what unbound will be told: the stack's three lines, then one per sandbox
+nix eval '.#nixosConfigurations.agentvm.config.services.unbound.settings.server.access-control'
+
+nix run 'nixpkgs#nixos-rebuild' -- test --flake '.#agentvm' --target-host root@l1
+# the checks below, then the same command with switch
+#+END_SRC
+
+| List               | Holds                                         | Example                                     |
+|--------------------+-----------------------------------------------+---------------------------------------------|
+| ~restricted~       | each sandbox, by project name and index       | ~pentest = 5;~                              |
+| ~allowedServices~  | names from ~serviceStacks~ in ~site.nix~      | ~"searxng"~                                 |
+| ~allowedElsewhere~ | destinations outside L1, an address and a TCP | ~{ address = "10.51.37.17"; port = 8080; }~ |
+|                    | port each                                     |                                             |
+
+With ~restricted~ empty the module changes nothing, and with only ~restricted~
+filled in, a sandbox keeps DNS, NTP and ping on L1 and nothing else. The index
+is all the module needs: it derives the tap and the address as ~agentctl~
+does. A service's port is read from ~site.nix~, so it follows a change there,
+and a misspelt service name fails the build.
+
+*The template ships ~carrier.extraModules~ commented out.* Remove its ~#~
+rather than adding a line below it. With the ~#~ left in, everything builds,
+nothing is restricted, and ~ssh l1 nft list table ip agent-restricted~
+answers ~No such file or directory~.
+
+*Quote the ~.#~ arguments*, as above: zsh reads an unquoted ~#~ as a pattern
+and stops with ~no matches found~.
+
+*What applying it costs.* ~test~ or ~switch~, nothing more: no ~deploy~, no
+~golden-build~, no ~agent reset~. Unbound restarts, so every sandbox is without
+DNS for about a second. A running restricted sandbox is held to the rules at
+once, and connections it already has to a destination now refused are cut;
+~ssh~ and ~agent attach~ sessions survive. Restricting another sandbox later,
+or releasing one, is the same: edit the list, ~switch~.
+
+*Checks*, from inside the restricted sandbox, with ~searxng~ allowed:
+
+| Command                                          | Expected                                     |
+|--------------------------------------------------+----------------------------------------------|
+| ~dig example.com~                                | ~status: REFUSED~                            |
+| ~dig searxng.svc.contained~                      | ~10.42.0.1~                                  |
+| ~curl -m5 http://searxng.svc.contained:3000/~    | ~Cannot GET /~: the MCP server, answering;   |
+|                                                  | it serves ~/mcp~ alone                       |
+| ~nc -zv -w3 10.42.0.1 3129~                      | times out: Squid is closed to it             |
+| ~curl -m6 https://example.com~                   | ~Could not resolve host~                     |
+| ~curl -m6 -k https://1.1.1.1~                    | times out                                    |
+| ~nc -zv -w4~ an ~allowedElsewhere~ address, port | connects                                     |
+
+And from L0:
+
+#+BEGIN_SRC sh
+agent attach pentest                              # still works
+ssh l1 nft list table ip agent-restricted         # its tap in both sets; counters on the drops
+ssh l1 'grep tap-5 /data/logs/flow.log | tail'    # what it tried, and was refused
+#+END_SRC
+
+*** What it leaves open
+
+*A project deleted and re-created loses the restriction, silently.* It is given
+a new index, which the list does not name, and with it the default policy.
+~stop~, ~start~ and ~agent reset~ keep the index.
+
+*An allowed service that reaches the internet is a way out.* SearXNG sends the
+sandbox's queries to search engines and brings the results back: little
+bandwidth, but a path both ways. The same holds for whatever an
+~allowedElsewhere~ destination can reach or do on the sandbox's behalf.
+
+*Other sandboxes can still reach it on 80 and 443*, through Squid, which
+connects from L1. The module restricts what the sandbox opens, not what is
+opened towards it.
+
+*Its project folder is shared read-write with L0.* Files it writes there — git
+hooks, ~.envrc~, editor settings, scripts — run on L0 if you run them, or open
+the folder in something that runs them for you.
+
+*Other sandboxes' names still resolve*, from the internal zone. Their addresses
+stay unreachable.
+
+*Untested.* The rules the module renders for one sandbox, with ~searxng~ and
+one destination allowed, have run against a real L1. Several sandboxes, and
+several ~allowedElsewhere~ entries, have only been evaluated and passed NixOS's
+~nft --check~.
 
 ** The resolver, and networks that will not allow one
 
@@ -2964,7 +3113,8 @@ sandbox asks for on 80 and 443, L0's included. All of it is logged, none of it
 refused — the table in [[*What a sandbox can and cannot reach][What a sandbox
 can and cannot reach]] has the detail. Closing it means refusing the private,
 link-local and shared ranges in the forward chain and denying private
-destinations in Squid.
+destinations in Squid. For one sandbox at a time,
+[[*Restricting a sandbox][Restricting a sandbox]] closes it already.
 
 *L1's serial console cannot be logged into as it stands.* Root has no password
 on L1, and one set by hand lives on the system disk, which every ~deploy~

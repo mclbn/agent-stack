@@ -104,7 +104,8 @@
   # L1's data disk, created once by install and never resized after.
   # l1.dataDiskSize = "100G";
 
-  # NixOS modules of your own, added to L1's configuration.
+  # NixOS modules of your own, added to L1's configuration. Unlike the rest of
+  # this section, they also apply in place with nixos-rebuild switch.
   # carrier.extraModules = [ ];
 
   # ---- DNS and time on L1: nixos-rebuild switch, or deploy -------------------
