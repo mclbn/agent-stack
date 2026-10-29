@@ -78,17 +78,30 @@ Do this section first, then [[*Quickstart][Quickstart]] takes it from there.
 | ssh to L1 and the sandboxes, ~ssh-keygen~      | openssh     | openssh-client                            |
 | clones the AUR packages                        | git         | git                                       |
 | the VNC viewer, ~full~ profile only            | tigervnc    | tigervnc-viewer                           |
+| ~fusermount3~, for ~agent mount~ only          | fuse3       | fuse3                                     |
 
 mkosi, ~rsync~ and a second ~qemu-img~ come from the flake, pinned with
 everything else, so they are deliberately absent from that table. ~pacman~ in
 particular cannot come from the flake: mkosi sets ~PATH~ to
-~/usr/bin:/usr/sbin~ inside its own sandbox and looks for it there.
+~/usr/bin:/usr/sbin~ inside its own sandbox and looks for it there. bindfs,
+which ~agent mount~ runs, comes from the flake too; ~fusermount3~ cannot,
+because it has to be setuid root, which nothing in the Nix store is.
+
+*~agent mount~ also needs one line in ~/etc/fuse.conf~*, added once as root.
+L0's virtiofsd runs as root, and a FUSE mount made by your user refuses even
+root unless this line lets it be opened up — see
+[[*A read-only folder at /work/data][A read-only folder at /work/data]]. Nothing
+else here uses FUSE: skip both if you will not use ~agent mount~.
+
+#+BEGIN_SRC sh
+grep -qx user_allow_other /etc/fuse.conf || echo user_allow_other | sudo tee -a /etc/fuse.conf
+#+END_SRC
 
 ** Arch
 
 #+BEGIN_SRC sh
 sudo pacman -S --needed libvirt qemu-full dnsmasq nix \
-                        mtools base-devel git curl openssh tigervnc
+                        mtools base-devel git curl openssh tigervnc fuse3
 sudo systemctl enable --now libvirtd.socket nix-daemon.socket
 #+END_SRC
 
@@ -148,7 +161,7 @@ sudo add-apt-repository universe
 sudo apt update
 sudo apt install --no-install-recommends \
      libvirt-daemon-system libvirt-clients qemu-system-x86 qemu-utils \
-     dnsmasq-base mtools build-essential git curl openssh-client \
+     dnsmasq-base mtools build-essential git curl openssh-client fuse3 \
      pacman-package-manager makepkg archlinux-keyring tigervnc-viewer
 sudo systemctl enable --now libvirtd.socket
 #+END_SRC
@@ -631,6 +644,20 @@ agent vnc demo                         # just the viewer on the sandbox's displa
 The Emacs daemon lives as long as the VM: closing the viewer leaves it running,
 and ~agent emacs~ again finds the same frame rather than stacking a second one.
 ~agent stop~ ends it.
+
+*** Show a folder to a sandbox, read-only
+
+An engagement's files, say, at ~/work/data~ in a running sandbox, and gone
+again at once when you are done, with no restart either way — see
+[[*A read-only folder at /work/data][A read-only folder at /work/data]].
+
+#+BEGIN_SRC sh
+agent mount demo ~/engagements/acme    # read-only at /work/data, live
+agent unmount demo                     # gone, open files included
+#+END_SRC
+
+Swapping is ~unmount~, then ~mount~. A mount outlives ~agent stop~, ~reset~
+and ~delete~: only ~unmount~ or a reboot of L0 removes it.
 
 ** Changing the configuration
 
@@ -1607,6 +1634,72 @@ ssh l1 agentctl delete demo       # reset, then drop config, captures, address
 ssh l1 agentctl prune             # delete the goldens no overlay is pinned to
 #+END_SRC
 
+** A read-only folder at /work/data
+
+~agent mount <project> <dir>~ shows a folder of L0 at ~/work/data~ in that
+project's sandbox, read-only, while it runs; ~agent unmount <project>~ takes it
+away. Neither restarts anything, so one sandbox can move from one engagement's
+files to the next and keep its overlay.
+
+*The folder travels inside the workspace.* bindfs, from the flake, mounts it
+at ~<exportRoot>/<project>/data~ on L0, and from there it reaches the sandbox
+through the same two virtiofs hops as the rest of ~/work~. L1 sees it too, as
+part of the export root, and only while it is mounted. bindfs runs as you, in
+a transient user unit, ~agent-data-<project>~, so nothing is mounted after a
+reboot of L0.
+
+*Read-only twice over.* The mount carries the kernel's read-only flag from its
+first moment, and bindfs refuses writes itself, so root in the sandbox gets
+~Read-only file system~ for every change, renaming the ~data~ folder included.
+Only you and root — L0's virtiofsd — can read the mount: bindfs would
+otherwise open it to every user on L0.
+
+*Unmounting cuts what is already open.* The unmount is lazy, because L1 may
+still hold the folder; stopping bindfs then fails every handle the sandbox has
+left, such as an open file or a shell sitting in the folder, and the path shows
+the empty folder again.
+
+*Why not a bind mount.* It would need root on L0 at every swap, and nothing
+can revoke it: after ~umount -l~, a process that had the folder open keeps
+reading it, and keeps seeing what is added to it later, until the sandbox
+restarts. And ~mount --bind -o ro~ done in two steps, bind then remount,
+reaches the virtiofsd serving L1 writable, while ~findmnt~ on L0 shows it
+read-only.
+
+*What it does not do.* Unmounting cuts access to the folder, not to copies:
+whatever the agent copied into ~/work~ or onto its overlay stays. Between
+engagements whose files must not meet, clean ~/work~ and run ~agent reset~.
+And ~mount~ refuses a ~data~ folder that is not empty, since the mount would
+hide its files.
+
+*One-time setup on L0:* the ~fuse3~ package and one line in ~/etc/fuse.conf~
+— see [[*What each package is for][What each package is for]]. ~agent mount~
+checks both, and that the export root is on a shared mount, systemd's default:
+on a private one, a mount made while L1 runs would not reach it.
+
+*Ubuntu 25.04 and later confine ~fusermount3~ with AppArmor*, allowing mount
+points only under your home, ~/mnt~, ~/media~, ~/tmp~ and ~/run/user/<uid>~.
+The template's ~exportRoot~ is under your home and needs nothing; one elsewhere
+needs a rule for it in ~/etc/apparmor.d/local/fusermount3~. The sign is
+~apparmor="DENIED"~ with ~profile="fusermount3"~ in ~journalctl -k~.
+
+*Checks*, from L0 with a folder mounted on ~demo~:
+
+#+BEGIN_SRC sh
+systemctl --user status agent-data-demo        # bindfs, running
+findmnt -no OPTIONS ~/work/demo/data           # starts with ro
+ssh demo.agents.contained 'ls /work/data; sudo touch /work/data/x'
+                                               # your files, then: Read-only file system
+#+END_SRC
+
+*Untested as written.* The mechanism is proven: on Arch, a script running the
+same bindfs command against a running sandbox passed every check — the folder
+visible at once, every change refused to root in the sandbox, a file added on
+L0 shown live, and a process holding the folder open cut off by the unmount.
+The verbs themselves have run only in a sandbox, against a stand-in for
+bindfs. An L1 restart while a folder is mounted, the AppArmor rule, and
+distributions other than Arch have not been tried.
+
 * The agent wrapper
 
 One command per thing you actually want to do, run on L0. Install it once:
@@ -1637,6 +1730,8 @@ and then ~agent reset~ for a project to copy from the new one.
 | ~agent reset <project>~         | stop, then delete the overlay                                  |
 | ~agent delete <project>~        | reset, then drop its config and captures, and retire its       |
 |                                 | address; the workspace on L0 is left alone                     |
+| ~agent mount <project> <dir>~   | show ~<dir>~ read-only at ~/work/data~, live, no restart       |
+| ~agent unmount <project>~       | take ~/work/data~ away at once, open files included            |
 | ~agent list~                    | every project: address, state, overlay size, golden, missing   |
 |                                 | workspace                                                      |
 | ~agent prune~                   | delete the goldens no overlay is pinned to; never ~current~    |

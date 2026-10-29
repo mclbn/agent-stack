@@ -440,9 +440,13 @@
             #
             # Authority stays on L1: everything privileged is done by agentctl
             # there, over ssh. This wrapper never touches L1's state directly.
+            # The one thing it does on L0 itself is mount and unmount, which
+            # need no privilege: bindfs runs as you.
 
             CRED_SOURCE=${site.credentials.source}
             AUTHINFO=${site.credentials.authinfoFile}
+            EXPORT_ROOT=${site.exportRoot}
+            BINDFS=${pkgs.bindfs}/bin/bindfs
 
             # One line per credential: variable, machine name, command. The machine
             # name is what the synthesised netrc uses; the command is ignored when
@@ -474,6 +478,8 @@
                 echo "agent stop <project>          power off; overlay intact"
                 echo "agent reset <project>         stop, then delete the overlay"
                 echo "agent delete <project>        reset, then free its config, captures and address"
+                echo "agent mount <project> <dir>   show <dir> read-only at /work/data, live"
+                echo "agent unmount <project>       take /work/data away, open files included"
                 echo "agent list                    every project: address, state, overlay, image"
                 echo "agent prune                   delete the goldens no overlay is pinned to"
                 echo "agent capture <project> start|stop|delete"
@@ -615,6 +621,67 @@
                 "LANG=${site.guest.locale} tmux new-session -A -s $session -c /work $cmd"
             }
 
+            # /work/data in the sandbox, and the user unit whose bindfs serves it.
+            data_dir() { echo "$EXPORT_ROOT/$1/data"; }
+            data_unit() { echo "agent-data-$1"; }
+
+            # Checked by name rather than left to fail inside bindfs or
+            # fusermount3 with a message about neither. A mount made on a private
+            # mount would not reach the virtiofsd serving L1 until L1 restarts.
+            require_fuse() {
+              local fm
+              fm=$(command -v fusermount3) \
+                || die "no fusermount3: install the fuse3 package"
+              [ -u "$fm" ] || die "$fm is not setuid root"
+              grep -qx user_allow_other /etc/fuse.conf 2>/dev/null \
+                || die "add the line user_allow_other to /etc/fuse.conf (as root)"
+              case $(findmnt -no PROPAGATION -T "$EXPORT_ROOT") in
+                *shared*) ;;
+                *) die "$EXPORT_ROOT is not on a shared mount: L1 would not see the folder" ;;
+              esac
+            }
+
+            # Read-only, live, no restart. bindfs runs as you in a transient user
+            # unit, so nothing survives a reboot of L0. -r: the kernel and bindfs
+            # both refuse writes, root's included. --no-allow-other -o allow_root:
+            # only you and root, L0's virtiofsd, may read it; bindfs opens it to
+            # every user otherwise. PATH: so that bindfs finds the fusermount3
+            # checked above, not whichever one the user manager's PATH holds.
+            mount_data() {
+              local project=$1 folder=$2 mnt
+              mnt=$(data_dir "$project")
+              [ -d "$EXPORT_ROOT/$project" ] || die "no project folder $EXPORT_ROOT/$project"
+              [ -d "$folder" ] || die "no folder $folder"
+              require_fuse
+              mountpoint -q "$mnt" && die "$project already has data mounted: agent unmount $project first"
+              # Refused rather than hidden: a mount over files would mask them.
+              [ -z "$(ls -A "$mnt" 2>/dev/null)" ] || die "$mnt is not empty"
+              mkdir -p "$mnt"
+              systemd-run --user --quiet --collect --unit="$(data_unit "$project")" \
+                --setenv=PATH="$PATH" \
+                "$BINDFS" -f -r --no-allow-other -o allow_root "$(realpath "$folder")" "$mnt"
+              for _ in $(seq 1 50); do
+                mountpoint -q "$mnt" && break
+                sleep 0.1
+              done
+              mountpoint -q "$mnt" \
+                || die "bindfs did not mount: journalctl --user -u $(data_unit "$project")"
+              echo "$folder is at /work/data in $project, read-only"
+            }
+
+            # Lazy, because L1 may still hold the folder and a plain unmount would
+            # be refused as busy. Stopping bindfs then fails every handle the
+            # sandbox has left, open files and working directories included, so
+            # nothing needs restarting.
+            unmount_data() {
+              local project=$1 mnt
+              mnt=$(data_dir "$project")
+              mountpoint -q "$mnt" || die "nothing mounted at $mnt"
+              fusermount3 -uz "$mnt"
+              systemctl --user stop "$(data_unit "$project")" 2>/dev/null || true
+              echo "/work/data unmounted from $project"
+            }
+
             # ---------------------------------------------------------------------
             [ $# -ge 1 ] || usage
             verb=$1
@@ -653,6 +720,16 @@
               stop|reset|delete)
                 [ $# -eq 1 ] || usage
                 ssh l1 "agentctl $verb $1"
+                ;;
+              # A folder of L0, read-only at /work/data, plugged in and out while
+              # the sandbox runs. Neither verb touches the sandbox or L1.
+              mount)
+                [ $# -eq 2 ] || usage
+                mount_data "$1" "$2"
+                ;;
+              unmount)
+                [ $# -eq 1 ] || usage
+                unmount_data "$1"
                 ;;
               list)
                 [ $# -eq 0 ] || usage
