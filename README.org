@@ -797,12 +797,25 @@ $EDITOR ~/agent-dotfiles/.config/claude-api/.claude.json
 $EDITOR ~/agent-dotfiles/.config/claude-pro/.claude.json
 $EDITOR ~/agent-dotfiles/.config/codex/config.toml
 $EDITOR ~/agent-dotfiles/.config/opencode/opencode.json
-jq . ~/agent-dotfiles/.config/claude-*/.claude.json ~/agent-dotfiles/.config/opencode/opencode.json >/dev/null
+python3 -c '
+import json, sys
+def pairs(p):
+    keys = [k for k, _ in p]
+    dup = sorted({k for k in keys if keys.count(k) > 1})
+    if dup: raise ValueError("duplicate keys: %s" % ", ".join(dup))
+    return dict(p)
+for f in sys.argv[1:]:
+    try: json.load(open(f), object_pairs_hook=pairs)
+    except (OSError, ValueError) as e: sys.exit("%s: %s" % (f, e))
+' ~/agent-dotfiles/.config/claude-*/.claude.json ~/agent-dotfiles/.config/opencode/opencode.json
 agent reset demo
 #+END_SRC
 
 Check every JSON file before the reset: a malformed ~.claude.json~ costs the
-whole file, not just the server.
+whole file, not just the server. The check also refuses a key given twice,
+which ~jq .~ accepts without a word, keeping the last: a second ~"provider"~
+block in ~opencode.json~ silently replaces the first. It needs ~python3~ on
+L0, which Ubuntu always has and Arch has in the ~python~ package.
 
 *** Change L1 or sandbox sizing
 
@@ -2607,6 +2620,53 @@ so the choice survives ~stop~ but not ~reset~.
 
 Anthropic needs no configuration at all: opencode reads ~ANTHROPIC_API_KEY~
 from the environment, so it appears alongside as a second choice.
+
+** opencode with a Command Code subscription
+
+Nothing to configure in opencode. Its model catalogue, models.dev, has a
+~commandcode~ provider that appears as soon as ~CMD_API_KEY~ is in the
+environment, so the key is one credential entry like any other — see
+[[*Adding a provider][Adding a provider]]:
+
+#+BEGIN_SRC nix
+credentials.entries.CMD_API_KEY = {
+  machine = "api.commandcode.ai";
+  command = "pass show ai/commandcode";
+};
+#+END_SRC
+
+Then ~nix profile upgrade agent~. The name has to be exactly ~CMD_API_KEY~:
+it is the one the catalogue tells opencode to read, and a key under any other
+name is pushed but never used. The provider shows as ~CommandCode~ in
+~/models~, its models as ~commandcode/<id>~. ~claude-api~ and ~codex~ source
+the same file and ignore the variable.
+
+*Quit a running opencode first.* The key is pushed at every attach, but ~agent
+opencode~ reattaches to its tmux session when one is open, and the opencode
+inside keeps the environment it started with. Quit it, then attach again.
+
+*The list is the catalogue, not your plan.* Every Command Code plan but Go
+has API access, with the same key as the ~cmd~ CLI, but each plan covers part
+of what Command Code serves. In October 2026, on GOAT, most Claude models and
+several GPT and Gemini ones were listed but not included, and some models GOAT
+does include were missing from the catalogue, so opencode does not offer them.
+The plan pages on commandcode.ai list what each plan covers.
+
+*The provider comes from the downloaded catalogue.* The opencode binary does
+not carry the ~commandcode~ entry; opencode fetches models.dev when it starts.
+Where opencode 2 keeps its copy, and so whether the provider still shows when
+models.dev cannot be reached, has not been looked at.
+
+#+BEGIN_SRC sh
+ssh demo.agents.contained 'grep -c ^CMD_API_KEY= /run/creds/env'
+#+END_SRC
+
+Then ~/models~ in opencode, a prompt to a model your plan covers, and the
+usage appearing in Command Code Studio.
+
+*Untested end to end.* With a dummy key, opencode 2.2.0 listed 71
+~commandcode/…~ models beside the other providers; no request has been sent
+with a real key.
 
 ** Adding a provider
 

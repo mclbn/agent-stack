@@ -80,6 +80,7 @@
   #   ANTHROPIC_API_KEY = { machine = "api.anthropic.com"; command = "pass show ai/anthropic"; };
   #   OPENAI_API_KEY = { machine = "api.openai.com"; command = "pass show ai/openai"; };
   #   OPENCODE_API_KEY = { machine = "opencode.ai"; command = "pass show ai/opencode"; };
+  #   CMD_API_KEY = { machine = "api.commandcode.ai"; command = "pass show ai/commandcode"; };
   # };
 
   # ---- Sandboxes: deploy, then agent stop and start, after a change ----------
