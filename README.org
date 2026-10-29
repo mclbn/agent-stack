@@ -6,12 +6,13 @@ One isolated virtual machine per project, on your own machine. ~agent claude-api
 myproject~ gives a coding agent a full Arch toolchain, that one project's files
 and nothing else of yours, network access that is filtered and logged, and web
 search through a service you run yourself. The sandbox is disposable:
-~agent reset~ throws away everything done inside it and starts it again from
-the current golden image.
+~agent reset~ throws away everything done inside it, and the next start boots
+it again from the current golden image.
 
 Everything site-local — paths, sizing, which agents, which credentials, which
-services — lives in one short file, ~site.nix~, in a folder of your own. This
-repository holds the stack, never your settings.
+services — lives in one short file, ~site.nix~, in a folder of your own,
+beside any modules or service stacks you add. This repository holds the stack,
+never your settings.
 
 * How it fits together
 
@@ -67,7 +68,6 @@ Do this section first, then [[*Quickstart][Quickstart]] takes it from there.
 |------------------------------------------------+-------------+-------------------------------------------|
 | the libvirt daemon, and ~virsh~                | libvirt     | libvirt-daemon-system, libvirt-clients    |
 | QEMU, and ~qemu-img~                           | qemu-full   | qemu-system-x86, qemu-utils               |
-| the virtiofs daemon, for the workspace mounts  | virtiofsd   | virtiofsd (universe)                      |
 | DHCP and DNS on the libvirt NAT network        | dnsmasq     | dnsmasq-base                              |
 | Nix, which builds and runs everything here     | nix         | upstream installer, see below             |
 | populates the ESP during the image build       | mtools      | mtools                                    |
@@ -80,14 +80,14 @@ Do this section first, then [[*Quickstart][Quickstart]] takes it from there.
 | the VNC viewer, ~full~ profile only            | tigervnc    | tigervnc-viewer                           |
 
 mkosi, ~rsync~ and a second ~qemu-img~ come from the flake, pinned with
-everything else, so they are deliberately absent from that table. The one host
-binary the image build cannot do without is ~pacman~: mkosi sets ~PATH~ to
+everything else, so they are deliberately absent from that table. ~pacman~ in
+particular cannot come from the flake: mkosi sets ~PATH~ to
 ~/usr/bin:/usr/sbin~ inside its own sandbox and looks for it there.
 
 ** Arch
 
 #+BEGIN_SRC sh
-sudo pacman -S --needed libvirt qemu-full virtiofsd dnsmasq nix \
+sudo pacman -S --needed libvirt qemu-full dnsmasq nix \
                         mtools base-devel git curl openssh tigervnc
 sudo systemctl enable --now libvirtd.socket nix-daemon.socket
 #+END_SRC
@@ -140,15 +140,15 @@ nix store info                                # should report the daemon store
 
 ** Ubuntu 24.04 LTS
 
-~virtiofsd~, ~pacman-package-manager~, ~makepkg~, ~archlinux-keyring~ and
-~tigervnc-viewer~ are all in *universe*, so enable it first.
+~pacman-package-manager~, ~makepkg~, ~archlinux-keyring~ and ~tigervnc-viewer~
+are all in *universe*, so enable it first.
 
 #+BEGIN_SRC sh
 sudo add-apt-repository universe
 sudo apt update
 sudo apt install --no-install-recommends \
      libvirt-daemon-system libvirt-clients qemu-system-x86 qemu-utils \
-     virtiofsd dnsmasq-base mtools build-essential git curl openssh-client \
+     dnsmasq-base mtools build-essential git curl openssh-client \
      pacman-package-manager makepkg archlinux-keyring tigervnc-viewer
 sudo systemctl enable --now libvirtd.socket
 #+END_SRC
@@ -216,7 +216,7 @@ dotfiles and agent tools ones.
 
 ** Open questions on Ubuntu 24.04
 
-Six things that could not be settled without running it. Each is listed with
+Five things that could not be settled without running it. Each is listed with
 what would go wrong and what to try, so a first run is diagnosis rather than
 guesswork. Please record the answers here as they are found.
 
@@ -270,20 +270,14 @@ container.
 *5. AppArmor confines libvirt on Ubuntu*, generating a profile per domain.
 Two things here may trip it: the per-domain root DAC label above, and the
 ~l1-system-current.qcow2~ symlink, which a generated profile may not follow.
-If the domain refuses to start after an image swap, add the paths under
-~/etc/apparmor.d/local/abstractions/libvirt-qemu~. Pointing ~<source file=…>~
-at the dated image with ~sudo virsh edit~ also works, but only until the next
-~install~ or ~deploy~, which redefine the domain from the flake.
+If the domain refuses to start after an image swap, the profile needs a rule
+for the dated images. Which rule works, and whether it belongs in
+~/etc/apparmor.d/local/abstractions/libvirt-qemu~, has not been established;
+record it here once found. Pointing ~<source file=…>~ at the dated image with
+~sudo virsh edit~ also works, but only until the next ~install~ or ~deploy~,
+which redefine the domain from the flake.
 
-*6. virtiofsd's install path differs.* Debian and Ubuntu place it under
-~/usr/libexec~ rather than ~/usr/bin~. libvirt normally finds it either way,
-but if the workspace mount is empty this is worth ruling out:
-
-#+BEGIN_SRC sh
-ls -l /usr/libexec/virtiofsd /usr/lib/qemu/virtiofsd /usr/bin/virtiofsd 2>/dev/null
-#+END_SRC
-
-A seventh possibility, if several of these turn out to be real: run
+A sixth possibility, if several of these turn out to be real: run
 ~golden-build~ inside an Arch container and leave the rest of the stack on
 Ubuntu. It answers 1 through 4 at once, at the cost of a container runtime on
 L0. Nothing outside the golden image build depends on the host being Arch.
@@ -310,7 +304,9 @@ A ~flake.lock~ appears with the first command below: it pins the version of
 the stack you are running.
 
 *2. Make the folders and the key.* The export root holds your projects, one
-sub-folder each, and is the only part of L0 that L1 can see.
+sub-folder each. It and the dotfiles and agent-tools folders, both exported
+read-only, are the only parts of L0 that L1 can see, and every sandbox can read
+those two.
 
 #+BEGIN_SRC sh
 mkdir -p ~/work/demo && chmod 700 ~/work     # demo: a project to start with
@@ -357,8 +353,8 @@ minutes for ~light~, tens of minutes for ~full~.
 nix run '.#golden-build'
 #+END_SRC
 
-*6. Install the wrapper and start a sandbox.* The first ~agent~ command for a
-project creates it.
+*6. Install the wrapper and start a sandbox.* The first ~agent~ command that
+starts a project creates it.
 
 #+BEGIN_SRC sh
 nix profile install '.#agent'
@@ -379,15 +375,17 @@ nix profile upgrade agent
 agent claude-api demo
 #+END_SRC
 
-Keep the site folder with your backups: it is all that makes this installation
-yours. Moving to a newer stack later is [[*Upgrade the stack][one command]].
+Keep the site folder, ~dotfilesRoot~ and ~agentToolsRoot~ with your backups:
+together they are all that makes this installation yours. Moving to a newer
+stack later is [[*Upgrade the stack][one command]].
 
 * Settings
 
 ~site.nix~ lists every setting. The four required ones and ~guest.profile~
 and ~guest.snapshot~ are set; every other line is commented out and shows the
-default, which applies as long as the line stays commented — a later version
-of the stack may change it. To change a setting, remove the ~#~ at the start
+default. While a line stays commented, the stack's current default applies,
+and a later version of the stack may change that default. To change a setting,
+or to keep its value fixed, remove the ~#~ at the start
 of its line and edit the value. What each setting does, in full, is in
 [[file:site/options.nix][site/options.nix]], online at
 https://github.com/mclbn/agent-stack/blob/main/site/options.nix. A
@@ -449,7 +447,10 @@ now.
 | ~internalDomain~  | The zone is in L1's resolver, in the ~agent~ wrapper and in      |
 |                   | ~~/.ssh/config~: after a change, ~nix run '.#deploy'~,           |
 |                   | ~nix profile upgrade agent~, and ~nix run '.#ssh-config'~ again, |
-|                   | its output replacing the old stanzas.                            |
+|                   | its output replacing the old stanzas. Sandboxes are named        |
+|                   | ~<project>.agents.<internalDomain>~ and services                 |
+|                   | ~<name>.svc.<internalDomain>~; the default is ~contained~,       |
+|                   | which every example here uses.                                   |
 
 ** Everything else, and what to re-run
 
@@ -472,9 +473,10 @@ it; start them again with ~agent start~ once ~ssh l1 true~ answers.
 | ~operatorSshKey~, ~l1.memoryMiB~, ~l1.vcpu~,        | the libvirt domain as well as          |
 | ~l1.cpuQuota~, ~l1.cpuPeriod~, ~l1.systemDiskMiB~   | replacing the system disk. Create a    |
 |                                                     | new ~exportRoot~, ~dotfilesRoot~ or    |
-|                                                     | ~agentToolsRoot~ first: only           |
-|                                                     | ~install~ checks for one, the export   |
-|                                                     | root, and a missing folder leaves L1   |
+|                                                     | ~agentToolsRoot~ first: ~deploy~ does  |
+|                                                     | not check that it exists (only         |
+|                                                     | ~install~ checks, and only the export  |
+|                                                     | root), and a missing folder leaves L1  |
 |                                                     | stopped.                               |
 | ~guest.*~ — locale, keymap, profile,                | ~nix run '.#golden-build'~, then       |
 | snapshot, vnc, extraPackages, aurPackages,          | ~agent reset~ on each project, since   |
@@ -518,8 +520,9 @@ means moving the disks: ~install~ creates a new, empty data disk in a
 directory that has none, and L1 would boot with an empty ~/data~ — every
 overlay, golden, log and allocation would be left behind in the old directory.
 Shut L1 down, ~sudo mv~ the old directory to the new path, then
-~nix run '.#install'~. In all three commands above, substitute your own names
-if you changed them.
+~nix run '.#install'~. In the commands above, ~agent-l1~, ~agent-wan~ and
+~/var/lib/libvirt/images/agent~ are the defaults; substitute yours if you
+changed them.
 
 * Common tasks
 
@@ -564,15 +567,15 @@ sudo virsh net-list                    # agent-wan active
 ssh l1 true && echo "carrier reachable"
 ssh l1 'systemctl is-system-running'   # running, or degraded + what failed
 ssh l1 'systemctl list-units "svc-*" --no-pager'   # the service stacks
-ssh l1 agentctl status                 # every project: address, state, overlay, image
+ssh l1 agentctl status                 # every project: address, state, overlay, image, workspace
 ssh l1 'btrfs filesystem usage -h /data | head -4'
 #+END_SRC
 
 ~degraded~ is the one worth reading closely: the carrier is up and a unit has
 failed, which ~systemctl --failed~ names. ~agentctl status~ reports ~running~,
 ~stopped~ or ~reset~ per project, so a project you expected to be up and which
-reads ~reset~ has lost its overlay rather than its power. Its last column reads
-~missing~ when the project's workspace is gone from L0, which makes it a
+reads ~reset~ has lost its overlay rather than its power. Its last column, the
+workspace, reads ~missing~ when it is gone from L0, which makes the project a
 candidate for ~agent delete~, and ~?~ when the export is not mounted on L1 and
 there is no way to tell.
 
@@ -589,7 +592,7 @@ agent list                             # every project, its address and state
 agent start demo                       # up, credentials pushed, no attach
 agent stop demo                        # power off, overlay intact
 agent reset demo                       # stop, then delete the overlay
-agent delete demo                      # reset, then free its config and address
+agent delete demo                      # reset, then drop its config and retire its address
 agent prune                            # free goldens that no overlay uses any more
 #+END_SRC
 
@@ -681,7 +684,7 @@ An edit reaches the *next* sandbox created, not the ones already running — see
 
 #+BEGIN_SRC sh
 $EDITOR ~/agent-dotfiles/.config/emacs/init.el   # affects the next creation
-agent reset demo                                 # take a fresh copy now
+agent reset demo                                 # a fresh copy at the next start
 #+END_SRC
 
 A sandbox is seeded from ~dotfilesRoot~ when it is created and owns its copies
@@ -703,7 +706,7 @@ the tools their index lists — see [[*Agent tools][Agent tools]].
 
 #+BEGIN_SRC sh
 cp dedupe.py ~/agent-tools/ && $EDITOR ~/agent-tools/README.md   # the tool and its entry
-agent reset demo                                                  # copy it into demo now
+agent reset demo                                                  # copied into demo at the next start
 #+END_SRC
 
 A tool the project already has is never overwritten, so a newer version
@@ -733,11 +736,11 @@ nix run '.#golden-build'               # anything under guest.*, then agent rese
 #+END_SRC
 
 Pick the line that matches; they are alternatives, except for ~timezone~,
-which needs both ~deploy~ and ~golden-build~. A ~guest.*~ change needs
-~agent reset~ per project, since each one stays on the golden it was created
-from. The settings not listed here — ~internalDomain~, ~sshIdentityFile~,
-~wan.*~ and the libvirt names — need more than one command: the table says
-what.
+which needs both ~deploy~ and ~golden-build~, and ~guest.locale~, which also
+needs ~nix profile upgrade agent~. A ~guest.*~ change needs ~agent reset~ per
+project, since each one stays on the golden it was created from. The settings
+not listed here — ~internalDomain~, ~sshIdentityFile~, ~wan.*~ and the libvirt
+names — need a command not shown here, or more than one: the table says what.
 
 *** Change the carrier's configuration
 
@@ -750,7 +753,7 @@ discards it. Neither touches ~/data~ — see
 
 #+BEGIN_SRC sh
 $EDITOR carrier-local.nix              # e.g. { pkgs, ... }: { environment.systemPackages = [ pkgs.ncdu ]; }
-$EDITOR site.nix                       # carrier.extraModules = [ ./carrier-local.nix ];
+$EDITOR site.nix                       # carrier.extraModules = [ ./carrier-local.nix ]; or add it to the list
 
 # in place, L1 must be running
 nix run 'nixpkgs#nixos-rebuild' -- switch --flake '.#agentvm' --target-host root@l1
@@ -812,7 +815,7 @@ agent reset demo
 
 Check every JSON file before the reset: a malformed ~.claude.json~ costs the
 whole file, not just the server. The check also refuses a key given twice,
-which ~jq .~ accepts without a word, keeping the last: a second ~"provider"~
+which ~jq .~ accepts without a word, keeping the last: a second ~"providers"~
 block in ~opencode.json~ silently replaces the first. It needs ~python3~ on
 L0, which Ubuntu always has and Arch has in the ~python~ package.
 
@@ -851,7 +854,7 @@ returns to the last one that worked. ~deploy~ replaces L1's system disk and
 with it the generation history; ~/data~ is untouched.
 
 The serial console, ~sudo virsh console agent-l1~, is off the network, but it
-asks for a login and root has no password on L1. A password set with
+asks for a login, and root on L1 has no usable password. A password set with
 ~ssh l1 passwd~ lives on the system disk, so it lasts until the next ~deploy~;
 with one, ~nixos-rebuild switch --rollback~ from the console returns to the
 previous generation.
@@ -900,7 +903,7 @@ see [[*The golden image][The golden image]].
 $EDITOR site.nix        # in the guest block: extraPackages = [ "htop" ];
                         # AUR: also aurPackages = [ "foo-bin" ]; and "foo" in extraPackages
 nix run '.#golden-build'
-agent reset demo && ssh demo.agents.contained 'pacman -Q htop'
+agent reset demo && agent start demo && ssh demo.agents.contained 'pacman -Q htop'
 #+END_SRC
 
 An AUR package left out of ~extraPackages~ is built and not installed, which
@@ -955,8 +958,8 @@ at the next boot.
 
 *** Find out why a service is unhappy
 
-Three verbs, cheapest first — see
-[[*Service stacks and MCP][Service stacks and MCP]].
+Three verbs to diagnose, cheapest first, and one to restart a stuck stack —
+see [[*Service stacks and MCP][Service stacks and MCP]].
 
 #+BEGIN_SRC sh
 agent service list                     # what exists, and what is running
@@ -967,9 +970,9 @@ agent service restart searxng          # a stack that is stuck; same compose fil
 
 The first start of a stack pulls images, so a minute of apparent hanging is
 expected rather than a fault. A restart re-runs the compose file L1 already
-has: L1 runs a copy taken when it was built, so an edited compose file, like
-any ~site.nix~ change, reaches L1 only with ~nix run '.#deploy'~ or
-~nixos-rebuild switch~.
+has: L1 runs a copy taken when it was built, so an edited compose file reaches
+L1 with ~nix run '.#deploy'~. ~nixos-rebuild switch~ should work too, since the
+unit names the compose file by its store path, but has not been tried.
 
 *** Register an MCP server with an agent
 
@@ -1009,8 +1012,9 @@ ssh l1 'dig @127.0.0.1 example.com +short'
 from the root itself, and no resolver but its own is trusted. ~gateway~
 forwards to ~wan.gateway~, which is libvirt's dnsmasq on L0 and therefore
 follows whatever DNS the laptop currently has — one value that is correct on
-every network. A list forwards somewhere you name, and turns on DoT if every
-entry carries ~@853~.
+every network. A list forwards somewhere you name, and turns on DoT only if
+every entry carries ~@853~; a mixed list is queried without TLS throughout, so
+its ~@853~ entries, which expect TLS, do not answer.
 
 Running sandboxes survive it. Unbound restarts and its cache empties, so the
 next few lookups are slower; nothing else notices. DNSSEC is validated on L1
@@ -1048,7 +1052,8 @@ unbound restarts that service and drops proxied connections in flight.
 *** Restrict a sandbox's network
 
 For a sandbox you trust less than the others: L1's DNS for internal names
-only, the L1 services and outside destinations you list, and nothing else. A
+only, NTP and ping on L1, the L1 services and outside destinations you list,
+and nothing else. A
 module in your site folder, applied in place, with the sandbox left running —
 see [[*Restricting a sandbox][Restricting a sandbox]].
 
@@ -1056,7 +1061,7 @@ see [[*Restricting a sandbox][Restricting a sandbox]].
 curl -fsSLO https://raw.githubusercontent.com/mclbn/agent-stack/main/examples/carrier-restricted.nix
 ssh l1 'jq -r "[.project, .index] | @tsv" /data/state/alloc.jsonl'
 $EDITOR carrier-restricted.nix         # the three lists at the top
-$EDITOR site.nix                       # carrier.extraModules = [ ./carrier-restricted.nix ];
+$EDITOR site.nix                       # carrier.extraModules = [ ./carrier-restricted.nix ]; or add it to the list
 nix run 'nixpkgs#nixos-rebuild' -- test --flake '.#agentvm' --target-host root@l1
 # once the checks pass: the same with switch
 #+END_SRC
@@ -1102,9 +1107,11 @@ captures kept, not their length, that adds up.
 
 ~delete~ refuses while a capture runs: tcpdump holds its file open, so
 deleting it would free nothing. ~capture list~ marks the running one, and
-~(no project)~ on captures left by a project deleted before ~delete~ removed
-them; those go by hand, with ~ssh l1 rm /data/logs/pcap/<name>-*.pcap*~ for a
-name no other project extends.
+shows ~(no project)~ on captures left by a project deleted with an older
+version of the stack, before ~delete~ removed them. Those go by hand, with
+~ssh l1 'rm /data/logs/pcap/<name>-????????-??????.pcap*'~: the quotes keep
+your own shell from expanding the pattern, and its fixed-length timestamp keeps
+it off the captures of another project whose name begins with ~<name>-~.
 
 *Untested.* The unit and the wrapper verb exist; a capture has not been taken
 and opened end to end.
@@ -1209,9 +1216,9 @@ only one nothing rotates, which is why they go with the project.
 
 *The address is not reused.* The record moves to
 ~/data/state/alloc-deleted.jsonl~, which allocation still counts, so no other
-project is ever given it. The unbound and flow logs name clients by address
-alone, and this keeps every line in them attributable to the one project that
-held it. The ~/16~ has room for some 65,000 projects; only tearing the carrier
+project is ever given it. The unbound and flow logs name clients by address,
+the flow log by tap as well, never by project name, and this keeps every line
+in them attributable to the one project that held it. The ~/16~ has room for some 65,000 projects; only tearing the carrier
 down, which takes the logs with it, starts the count again.
 
 *** Tear the whole thing down
@@ -1269,11 +1276,12 @@ nix run '.#install'        # sudo: disks, network, domain, start
 #+END_SRC
 
 ~install~ is idempotent: rerunning it redefines the domain and installs a fresh
-system image without touching ~/data~. A running L1 is left running, on the
-old image until its next restart; ~deploy~ is the command that swaps and
-restarts. One system image is retained: both
-~install~ and ~deploy~ prune the older ones. Nothing
-that has to survive lives on the system disk, so recovering from a bad image
+system image without touching ~/data~. It points ~l1-system-current.qcow2~ at
+the new image and deletes the older ones at once, so a running L1 keeps
+running on an image whose file is already gone, and its next restart of any
+kind boots the new one; ~deploy~ is the command that swaps and restarts. One
+system image is retained, the newest: both ~install~ and ~deploy~ prune the
+older ones. Nothing that has to survive lives on the system disk, so recovering from a bad image
 means deploying a good one rather than reaching for a previous copy.
 
 #+BEGIN_SRC sh
@@ -1378,7 +1386,8 @@ Built on *L0*, not on L1: mkosi needs a conventional FHS host, and NixOS is
 not one — the attempt to give it one made every pacman post-transaction hook
 segfault.
 
-This is the only part of the stack that cares which distribution L0 runs.
+This is the only part of the stack that needs an Arch host; the other
+differences on Ubuntu are in [[*Open questions on Ubuntu 24.04][Open questions on Ubuntu 24.04]].
 mkosi, ~qemu-img~ and ~rsync~ come from the flake, pinned with everything else,
 but five things must come from the host: ~pacman~, which mkosi looks for inside
 its own sandbox; ~mtools~, which ~systemd-repart~ uses to populate the ESP;
@@ -1387,7 +1396,7 @@ agent installers. All but ~mtools~ are checked before the build starts, along
 with ~ssh~, rather than discovered halfway through it; a missing ~mtools~ shows
 only when ~systemd-repart~ reaches the ESP. They are installed as part of
 [[*Requirements on L0][Requirements on L0]]; on Ubuntu, read that section's
-open questions first, since four of the six are about this command.
+open questions first, since four of the five are about this command.
 
 #+BEGIN_SRC sh
 nix run '.#golden-build'
@@ -1397,10 +1406,10 @@ It builds under ~/var/tmp/agent-stack-golden~ with sudo, converts to qcow2,
 copies the result into ~/data/images/golden/~ on L1 as you rather than as root
 (the stack's private key never leaves your account), repoints ~current~ only
 after the copy lands, and prunes every older golden that no overlay is pinned
-to (~agentctl prune~). One that is still in use is kept and named with the
-projects holding it, running or not; ~agent list~ shows it in the IMAGE column
-as ~(old)~, and once those projects are reset or deleted, ~agent prune~
-frees it. Goldens are
+to (~agentctl prune~). One that is still in use is kept, and ~golden-build~
+lists the projects holding it, running or not; ~agent list~ shows it in the
+IMAGE column as ~(old)~, and once those projects are reset or deleted,
+~agent prune~ frees it. Goldens are
 named to the second, so a rebuild the same day never takes the name of one an
 overlay is pinned to. The package
 cache is kept so that a rebuild is cheap; the workspace and the raw image are
@@ -1436,8 +1445,8 @@ L1 in seconds.
 
 Console locale, keymap and timezone come from ~site.nix~ (~guest.locale~,
 ~guest.keymap~, and ~timezone~, which L1 shares) and default to ~en_US.UTF-8~,
-~us~ and ~UTC~. A locale other than ~en_US.UTF-8~, or ~C.UTF-8~, which glibc
-has built in, also needs a line in ~image/mkosi.skeleton/etc/locale.gen~ in a
+~us~ and ~UTC~. A locale other than ~en_US.UTF-8~ or ~C.UTF-8~ (which glibc
+has built in) also needs a line in ~image/mkosi.skeleton/etc/locale.gen~ in a
 clone of the stack — see [[*Working on the stack itself][Working on the stack
 itself]] — since it must be generated before it can be selected. The timezone
 is the exception among the three: it does not reach mkosi as its ~Timezone=~
@@ -1558,7 +1567,7 @@ ssh l1 agentctl status
 #+END_SRC
 
 The sandbox is reachable from L0 only, through L1, because that is the
-direction the design allows. L1 holds no private key, so it cannot ssh in
+direction the design allows. L1 holds no ssh client key, so it cannot ssh in
 itself:
 
 #+BEGIN_SRC sh
@@ -1626,8 +1635,8 @@ and then ~agent reset~ for a project to copy from the new one.
 | ~agent start <project>~         | bring it up and push credentials, without attaching            |
 | ~agent stop <project>~          | power off, overlay intact                                      |
 | ~agent reset <project>~         | stop, then delete the overlay                                  |
-| ~agent delete <project>~        | reset, then free its config, captures and address; the         |
-|                                 | workspace on L0 is left alone                                  |
+| ~agent delete <project>~        | reset, then drop its config and captures, and retire its       |
+|                                 | address; the workspace on L0 is left alone                     |
 | ~agent list~                    | every project: address, state, overlay size, golden, missing   |
 |                                 | workspace                                                      |
 | ~agent prune~                   | delete the goldens no overlay is pinned to; never ~current~    |
@@ -1732,8 +1741,9 @@ all four, and does so whichever shell you switch to.
 What it does *not* reach is anything systemd starts, which is not an ssh
 session at all. ~wm.service~ reads the same file explicitly through
 ~EnvironmentFile=~, so a program launched from i3 is covered too — any future
-GUI unit wants those two lines and the ~After=dotfiles-seed.service~ that goes
-with them.
+GUI unit wants the same ~EnvironmentFile=-/home/agent/.ssh/environment~ line
+(the leading ~-~ lets a sandbox without the file still start) and
+~After=dotfiles-seed.service~ with it.
 
 *Credentials.* See [[*Credentials][Credentials]]. Briefly: they are fetched on
 L0 by whatever command you name, pushed into tmpfs in the sandbox, and cleared
@@ -1800,7 +1810,7 @@ ssh l1 agentctl start demo
 #+END_SRC
 
 From inside the sandbox, that ordinary work is unaffected. The name resolves
-on L1 rather than on L0, which is why nothing on the laptop needs to know the
+on L1 rather than on L0, which is why L0's own resolver needs no entry for the
 zone:
 
 #+BEGIN_SRC sh
@@ -1870,7 +1880,7 @@ rules never see it.
 |                                            | everything else forwarded                     |                         |
 | anything over IPv6                         | refused                                       | —                       |
 
-The two rows in italics are the gap between this and the design rule.
+The two rows marked *allowed* are the gap between this and the design rule.
 Squid fetches whatever address a sandbox asks for, private ones included, and
 L1's forwarding rules refuse the agents segment, the wan segment and the
 container range but not the private ranges a LAN uses. So a sandbox can reach
@@ -1929,7 +1939,7 @@ lookups reach a name server its author chose.
 address is not the one its tap was given, because unbound tells sandboxes apart
 by address. NixOS's reverse-path filter on L1 already does this; the rule keeps
 the module from depending on it. The second accepts replies to connections L1
-opens, which is what keeps ~ssh~ and ~agent attach~ working.
+opens, which is what keeps ~ssh~ and the attaching ~agent~ verbs working.
 
 *** Setting it up
 
@@ -1940,7 +1950,7 @@ It must have been started once, which is when it is given its index.
 curl -fsSLO https://raw.githubusercontent.com/mclbn/agent-stack/main/examples/carrier-restricted.nix
 ssh l1 'jq -r "[.project, .index] | @tsv" /data/state/alloc.jsonl'   # every project's index
 $EDITOR carrier-restricted.nix         # the three lists at the top
-$EDITOR site.nix                       # carrier.extraModules = [ ./carrier-restricted.nix ];
+$EDITOR site.nix                       # carrier.extraModules = [ ./carrier-restricted.nix ]; or add it to the list
 
 # what unbound will be told: the stack's three lines, then one per sandbox
 nix eval '.#nixosConfigurations.agentvm.config.services.unbound.settings.server.access-control'
@@ -1963,7 +1973,8 @@ does. A service's port is read from ~site.nix~, so it follows a change there,
 and a misspelt service name fails the build.
 
 *The template ships ~carrier.extraModules~ commented out.* Remove its ~#~
-rather than adding a line below it. With the ~#~ left in, everything builds,
+rather than adding a line below it; if you have already set it, add the module
+to that list instead. With the ~#~ left in, everything builds,
 nothing is restricted, and ~ssh l1 nft list table ip agent-restricted~
 answers ~No such file or directory~.
 
@@ -1974,8 +1985,8 @@ and stops with ~no matches found~.
 ~golden-build~, no ~agent reset~. Unbound restarts, so every sandbox is without
 DNS for about a second. A running restricted sandbox is held to the rules at
 once, and connections it already has to a destination now refused are cut;
-~ssh~ and ~agent attach~ sessions survive. Restricting another sandbox later,
-or releasing one, is the same: edit the list, ~switch~.
+sessions of ~ssh~ and the attaching ~agent~ verbs survive. Restricting another
+sandbox later, or releasing one, is the same: edit the list, ~switch~.
 
 *Checks*, from inside the restricted sandbox, with ~searxng~ allowed:
 
@@ -1993,7 +2004,7 @@ or releasing one, is the same: edit the list, ~switch~.
 And from L0:
 
 #+BEGIN_SRC sh
-agent attach pentest                              # still works
+agent shell pentest                               # still works
 ssh l1 nft list table ip agent-restricted         # its tap in both sets; counters on the drops
 ssh l1 'grep tap-5 /data/logs/flow.log | tail'    # what it tried, and was refused
 #+END_SRC
@@ -2075,7 +2086,9 @@ is unaffected by all of it.
 | a list      | Forwards to addresses you name. With ~@853~ on every entry the     |
 |             | stack turns on DoT, which is the setting for a network you do not  |
 |             | trust — port 853 cannot be caught by a port-53 redirect, and you   |
-|             | choose the resolver instead of inheriting it.                      |
+|             | choose the resolver instead of inheriting it. A list that mixes    |
+|             | ~@853~ and plain entries gets no TLS at all, and its ~@853~        |
+|             | entries do not answer.                                             |
 
 Three things hold in every mode. The internal zone never leaves L1. The query
 log is unchanged, because ~log-queries~ records what unbound was *asked*, not
@@ -2288,9 +2301,9 @@ including the very end: neither setting cares when it runs.
 It carries two settings, and only two. ~auth-sources~ points at the pushed
 credentials, which a portable configuration has no way to know. ~custom-file~
 keeps Custom's writes out of ~init.el~ — which is a writable copy, so the write
-would otherwise succeed and append generated forms to configuration you
-maintain on L0, where you cannot see them and ~agent reset~ discards them
-without a word.
+would otherwise succeed and append generated forms to the sandbox's copy of
+configuration you maintain on L0, where you never see them and ~agent reset~
+discards them without a word.
 
 It deliberately does *not* redirect ~package-user-dir~ or the eln cache.
 ~~/.config/emacs/~ is an ordinary writable directory on the overlay, so the
@@ -2314,7 +2327,8 @@ daemon surviving disconnection, which is the point of the whole arrangement.
 * Service stacks and MCP
 
 Containers on L1, started at boot, one systemd unit per stack. Not VMs: a VM
-per MCP server costs 768 MB and a boot to run three containers, and the threat
+per MCP server costs 768 MB and a boot to run what is, for SearXNG, three
+containers (~searxng~, ~valkey~ and ~mcp-searxng~), and the threat
 that would address — a server escaping its container — is one this design
 accepts, since these are services you chose and run rather than agent-authored
 code.
@@ -2581,7 +2595,8 @@ dotfiles directory or to the overlay.
 
 ** Skills
 
-One folder serves all four agents: ~.agents/skills~ in ~dotfilesRoot~, one
+One folder serves every agent, Claude Code in both modes, Codex and opencode
+alike: ~.agents/skills~ in ~dotfilesRoot~, one
 sub-folder per skill with its ~SKILL.md~ inside, in the [[https://agentskills.io/specification][Agent Skills]]
 format.
 
@@ -2709,7 +2724,8 @@ What follows from that:
   server until the next ~reset~, and the same goes for Codex and opencode
   editing their own configuration.
 - *A malformed ~.claude.json~ costs the whole file*, not just the server. Check
-  it with ~jq~ before a reset.
+  it before a reset with the script in [[*Add an external MCP server][Add an external MCP server]], which
+  also catches a key given twice; ~jq~ does not.
 - *A missing key fails quietly.* ~agent: no value for EXA_API_KEY~ at attach
   is the only sign; the server then gets an empty key.
 - *Connected is not authenticated.* Exa also serves clients with no key, free
@@ -2722,7 +2738,7 @@ ssh demo.agents.contained 'journalctl -u dotfiles-seed --no-pager | grep -E "cla
 ssh demo.agents.contained 'grep -c ^EXA_API_KEY= /run/creds/env'
 #+END_SRC
 
-Then ~/mcp~ inside each agent.
+Then ~/mcp~ inside Claude Code and Codex, and ~/mcps~ inside opencode.
 
 *Untested end to end.* Claude Code's half is proven: a seeded ~.claude.json~ is
 read as user scope and kept, and a local listener received the key from the
@@ -2883,7 +2899,7 @@ incremental cache: dropping those means the next build redownloads ~20 GB, so
 ~--all~ is for when the disk is actually short rather than routine.
 
 Also on L0: one dated ~l1-system-*.qcow2~ is retained in
-~/var/lib/libvirt/images/agent~ — the live one, which ~install~ and ~deploy~
+~/var/lib/libvirt/images/agent~ — the newest, which ~install~ and ~deploy~
 both prune to — and each ~golden-build~ or ~deploy~ adds store paths that only
 ~nix store gc~ removes.
 
@@ -2990,30 +3006,36 @@ cannot be moved or renamed without editing it.
 |                                                        | and run ~nix store info~ — see          |
 |                                                        | [[*Arch][Arch]].                                   |
 | ~Cannot access storage file … (as uid:954)~            | The domain is not running as root.      |
-|                                                        | Check ~virsh dumpxml agent-l1~ carries  |
-|                                                        | the ~<seclabel>~ block, and that the    |
-|                                                        | definition was actually updated.        |
+|                                                        | Check ~sudo virsh dumpxml agent-l1~     |
+|                                                        | carries the ~<seclabel>~ block, and     |
+|                                                        | that the definition was actually        |
+|                                                        | updated.                                |
 | ~domain 'agent-l1' already exists with uuid~           | An older definition carries a different |
-|                                                        | UUID. ~virsh undefine agent-l1~ once,   |
-|                                                        | then reinstall.                         |
+|                                                        | UUID. ~sudo virsh undefine agent-l1~    |
+|                                                        | once, then reinstall.                   |
 | Files made on L1 land as root on L0                    | The DAC label did not reach virtiofsd.  |
 |                                                        | ~ps -o user= -C virtiofsd~ should say   |
 |                                                        | root.                                   |
-| No console output at all                               | Attach ~virsh console~ immediately      |
-|                                                        | after ~virsh start~: early boot is      |
+| No console output at all                               | Attach ~sudo virsh console~ immediately |
+|                                                        | after ~sudo virsh start~: early boot is |
 |                                                        | where a BIOS or MBR problem shows       |
 |                                                        | itself.                                 |
 | ~/srv/projects~ is empty                               | The filesystem did not attach. Check    |
-|                                                        | the filesystem device in ~virsh         |
-|                                                        | dumpxml~, that virtiofsd is installed   |
-|                                                        | on L0, and that ~journalctl -u          |
-|                                                        | libvirtd~ has no complaint about memfd  |
-|                                                        | shared memory backing.                  |
+|                                                        | the filesystem device in ~sudo virsh    |
+|                                                        | dumpxml agent-l1~, and that ~journalctl |
+|                                                        | -u libvirtd~ has no complaint about     |
+|                                                        | memfd shared memory backing.            |
 | Domain will not start after a swap                     | If L0 runs SELinux or AppArmor for      |
 |                                                        | libvirt, the ~l1-system-current.qcow2~  |
-|                                                        | symlink may not be followed. Relabel    |
-|                                                        | it; pointing ~<source file=…>~ at the   |
-|                                                        | dated image lasts only until the next   |
+|                                                        | symlink may not be followed. Under      |
+|                                                        | SELinux, relabel the image folder:      |
+|                                                        | ~sudo restorecon -Rv                    |
+|                                                        | /var/lib/libvirt/images/agent~. Under   |
+|                                                        | AppArmor, no working rule has been      |
+|                                                        | established yet: see question 5 in      |
+|                                                        | Requirements on L0. In both cases,      |
+|                                                        | pointing ~<source file=…>~ at the dated |
+|                                                        | image works, but only until the next    |
 |                                                        | ~install~ or ~deploy~.                  |
 | ~REMOTE HOST IDENTIFICATION HAS CHANGED~ for a sandbox | Expected after ~agent reset~: the       |
 |                                                        | sandbox regenerated its host keys. The  |
@@ -3063,8 +3085,8 @@ cannot be moved or renamed without editing it.
 
 ** When no name resolves
 
-Two commands on L1 separate the three things this can be. Run them in order and
-stop at the first that tells you something.
+Two commands on L1 separate the three things this can be. Run both, in order,
+then find the row below that matches.
 
 #+BEGIN_SRC sh
 ssh l1
@@ -3116,10 +3138,10 @@ link-local and shared ranges in the forward chain and denying private
 destinations in Squid. For one sandbox at a time,
 [[*Restricting a sandbox][Restricting a sandbox]] closes it already.
 
-*L1's serial console cannot be logged into as it stands.* Root has no password
-on L1, and one set by hand lives on the system disk, which every ~deploy~
-replaces. Recovery does not depend on it — ~deploy~ works from L0 without ssh
-— but the console is not the way back it might look like.
+*L1's serial console cannot be logged into as it stands.* Root has no usable
+password on L1, and one set by hand lives on the system disk, which every
+~deploy~ replaces. Recovery does not depend on it — ~deploy~ works from L0
+without ssh — but the console is not the way back it might look like.
 
 *The agents segment is fixed.* ~agentctl~ derives every sandbox address from
 ~10.42.0.0/16~, and the golden names ~10.42.0.1~ as gateway, resolver and time
@@ -3163,11 +3185,11 @@ authenticate the upstream; the mechanism is ordinary unbound, but if 853 is
 blocked on the network you are on, the failure will look like the port-53 case
 and the fix is ~gateway~.
 
-*~internalDomain~ lives in three places*: ~site.nix~, the installed ~agent~
-wrapper, and the stanzas ~nix run '.#ssh-config'~ printed into
-~~/.ssh/config~. The last two are generated from the first but not kept in step
-with it: a change means ~nix profile upgrade agent~ and printing the stanzas
-again.
+*~internalDomain~ lives in four places*: ~site.nix~, L1's resolver, the
+installed ~agent~ wrapper, and the stanzas ~nix run '.#ssh-config'~ printed
+into ~~/.ssh/config~. The last three are generated from the first but not kept
+in step with it: a change means ~nix run '.#deploy'~,
+~nix profile upgrade agent~ and printing the stanzas again.
 
 *~golden-build~ still refuses to run without ~/usr/bin/pacman~ with the message
 "this must run on an Arch host".* If the Ubuntu path works, that message is
@@ -3227,5 +3249,5 @@ at the SNI and splices, so hostnames are logged and URL paths are not.
 
 *The golden image on host distributions beyond Arch.* Ubuntu 24.04 is written
 up in [[*Open questions on Ubuntu 24.04][Open questions on Ubuntu 24.04]] but
-not yet run. Everything except the image build is distribution-agnostic
-already.
+not yet run. Everything except the image build already runs on other
+distributions, apart from the differences those open questions list.
